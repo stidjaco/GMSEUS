@@ -1,0 +1,107 @@
+//####################################################################################################################//
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+////////////////////////////////////////                                         ///////////////////////////////////////
+////////////////////////////////////////  Manually Validate InstYr With Imagery  ///////////////////////////////////////
+////////////////////////////////////////                                         ///////////////////////////////////////
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+//####################################################################################################################//
+ 
+/*
+-- Information --
+Author: Jacob Stid
+Date Created: 01-03-2025
+Date Updated: 01-03-2025
+Contact: stidjaco@msu.edu (Jacob Stid)
+
+-- Notes --
+In this script, we use available NAIP, Sentinel, and Landsat Imagery to check the installation year of solar energy systems. 
+*/
+
+//#######################\\
+// Select Array Boundary \\
+//#######################\\
+
+/*
+Use the polygon tool to draw a shape around the Polygon Boundary
+*/
+
+//#############################\\
+// Imagery Start and End dates \\
+//#############################\\
+ 
+// Select imagery year 
+var start_date = '2016' ;
+var end_date = start_date; // Selects imagery within the same year
+
+//#####################\\
+// Imagery Preparation \\
+//#####################\\
+
+// Cloud Mask function for landsat
+var cloudMaskL457 = function(image) {
+  var qa = image.select('QA_PIXEL');
+  // If the cloud bit (5) is set and the cloud confidence (7) is high
+  // or the cloud shadow bit is set (3), then it's a bad pixel.
+  var cloud = qa.bitwiseAnd(1 << 5)
+                  .and(qa.bitwiseAnd(1 << 7))
+                  .or(qa.bitwiseAnd(1 << 3));
+  // Remove edge pixels that don't occur in all bands
+  var mask2 = image.mask().reduce(ee.Reducer.min());
+  return image.updateMask(cloud.not()).updateMask(mask2);
+};
+
+// Function to mask clouds using the Sentinel-2 QA band.
+var maskS2clouds = function(image){
+  var qa = image.select('QA60');
+  // Bits 10 and 11 are clouds and cirrus, respectively.
+  var cloudBitMask = 1 << 10;
+  var cirrusBitMask = 1 << 11;
+  // Both flags should be set to zero, indicating clear conditions.
+  var mask = qa.bitwiseAnd(cloudBitMask).eq(0).and(
+             qa.bitwiseAnd(cirrusBitMask).eq(0));
+  // Return the masked and scaled data, without the QA bands.
+  return image.updateMask(mask).divide(10000)
+      .select("B.*")
+      .copyProperties(image, ["system:time_start"]);
+};
+
+// Get geometry bounds
+
+//####################\\
+//    Load Imagery    \\
+//####################\\
+
+// Load landsat 
+var ls = ee.ImageCollection("LANDSAT/LE07/C02/T1_TOA")
+    .filterDate(start_date+'-11-01', end_date+'-12-31')
+    .map(cloudMaskL457)
+    .qualityMosaic('B1')
+    .clip(geometry.buffer(1000));
+var visParams = {bands: ['B3', 'B2', 'B1'], min: 0, max: 3000, gamma: 1.4};
+
+// Load Sentinel-2 TOA reflectance data.
+var collection = ee.ImageCollection('COPERNICUS/S2')
+    .filterDate(start_date+'-11-01', end_date+'-12-31')
+    // Pre-filter to get less cloudy granules.
+    .filter(ee.Filter.lt('CLOUDY_PIXEL_PERCENTAGE', 20))
+    .filterBounds(geometry)
+    .map(maskS2clouds);
+var Sentinel = collection.qualityMosaic('B1');
+
+// Load NAIP
+var dataset = ee.ImageCollection('USDA/NAIP/DOQQ')
+    .filterDate(start_date+'-1-01', end_date+'-12-31')
+    .filterBounds(geometry);
+var NAIP = dataset.select(['R', 'G', 'B'])
+    .qualityMosaic('B')
+    .clip(geometry.buffer(1000));
+var trueColorVis = {min: 0.0, max: 255.0,};
+
+//#####################\\
+//     Map Imagery     \\
+//#####################\\
+
+Map.centerObject(geometry, 18)
+Map.addLayer(NAIP, trueColorVis, 'NAIP', true);
+Map.addLayer(Sentinel, {bands: ['B4', 'B3', 'B2'], min: 0, max: 0.3}, 'Sentinel', true);
+Map.addLayer(ls, visParams, "Landsat", true);
