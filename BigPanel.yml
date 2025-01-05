@@ -1,0 +1,24 @@
+name: F:\Python_Envs\BigPanel
+channels:
+  - conda-forge
+dependencies:
+  - numpy
+  - pandas
+  - rasterio
+  - ipykernel
+  - matplotlib-scalebar
+  - ca-certificates
+  - certifi
+  - openssl
+  - contextily
+  - seaborn
+  - requests
+  - openpyxl
+  - opencv
+  - geopandas
+  - pyproj
+  - osmnx
+  - h3~=3.0
+  - h3-py
+  - h3pandas
+prefix: F:\Python_Envs\BigPanel

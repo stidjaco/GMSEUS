@@ -1,0 +1,13 @@
+name: F:\Python_Envs\BigPanelGEE
+channels:
+  - conda-forge
+dependencies:
+  - numpy
+  - pandas
+  - geopandas
+  - earthengine-api
+  - ca-certificates
+  - certifi
+  - openssl
+  - geemap
+prefix: F:\Python_Envs\BigPanelGEE
