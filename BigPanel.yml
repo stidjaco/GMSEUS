@@ -1,4 +1,4 @@
-name: F:\Python_Envs\BigPanel
+name: BigPanel
 channels:
   - conda-forge
 dependencies:
@@ -21,4 +21,3 @@ dependencies:
   - h3~=3.0
   - h3-py
   - h3pandas
-prefix: F:\Python_Envs\BigPanel
