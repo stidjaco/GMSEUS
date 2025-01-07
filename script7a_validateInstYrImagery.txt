@@ -10,27 +10,43 @@
 -- Information --
 Author: Jacob Stid
 Date Created: 01-03-2025
-Date Updated: 01-03-2025
+Date Updated: 01-07-2025
 Contact: stidjaco@msu.edu (Jacob Stid)
 
 -- Notes --
 In this script, we use available NAIP, Sentinel, and Landsat Imagery to check the installation year of solar energy systems. 
+This script (script7a) can be used in collaboartion with script7b
+When an installation year is acquired, manually attribute it in script7
+When an exact installation year is uncertain, use the first year of high confidence (often with NAIP). 
 */
 
 //#######################\\
 // Select Array Boundary \\
 //#######################\\
 
-/*
-Use the polygon tool to draw a shape around the Polygon Boundary
-*/
+// Call joined GM-SEUS array shapes
+var gmseus = ee.FeatureCollection("projects/ee-stidjaco/assets/BigPanel/GMSEUS_Arrays_instYr_joined");
+
+// Get gmseus with missing instYr
+var gmseusNoInstYr = gmseus.filter(ee.Filter.eq("instYr", -9999));
+
+// Print number and unique tempID
+print("Number of array chunks missing an instYr:", gmseusNoInstYr.size());
+print("Missing tempIDs:", gmseusNoInstYr.aggregate_array("tempID"));
+
+// Get feature to manually validate 
+var ids = gmseusNoInstYr.aggregate_array("tempID"); 
+var feature = ee.Feature(gmseusNoInstYr.filter(ee.Filter.eq("tempID", ids.get(1))).first()); print("Array ID being assessed: ", feature.getNumber("tempID"));
+
+// Set feature geometry as imagery input
+var geom = feature.geometry(); Map.addLayer(geom); Map.centerObject(geom);
 
 //#############################\\
 // Imagery Start and End dates \\
 //#############################\\
  
 // Select imagery year 
-var start_date = '2016' ;
+var start_date = '2013' ;
 var end_date = start_date; // Selects imagery within the same year
 
 //#####################\\
@@ -65,8 +81,6 @@ var maskS2clouds = function(image){
       .copyProperties(image, ["system:time_start"]);
 };
 
-// Get geometry bounds
-
 //####################\\
 //    Load Imagery    \\
 //####################\\
@@ -76,32 +90,32 @@ var ls = ee.ImageCollection("LANDSAT/LE07/C02/T1_TOA")
     .filterDate(start_date+'-11-01', end_date+'-12-31')
     .map(cloudMaskL457)
     .qualityMosaic('B1')
-    .clip(geometry.buffer(1000));
-var visParams = {bands: ['B3', 'B2', 'B1'], min: 0, max: 3000, gamma: 1.4};
+    .clip(geom.buffer(10000));
+var visParams = {bands: ['B3', 'B2', 'B1'], min: 0, max: 0.5, gamma: 1.2};
 
 // Load Sentinel-2 TOA reflectance data.
-var collection = ee.ImageCollection('COPERNICUS/S2')
+var Sentinel = ee.ImageCollection('COPERNICUS/S2')
     .filterDate(start_date+'-11-01', end_date+'-12-31')
     // Pre-filter to get less cloudy granules.
     .filter(ee.Filter.lt('CLOUDY_PIXEL_PERCENTAGE', 20))
-    .filterBounds(geometry)
-    .map(maskS2clouds);
-var Sentinel = collection.qualityMosaic('B1');
+    .filterBounds(geom)
+    .map(maskS2clouds)
+    .qualityMosaic('B1')
+    .clip(geom.buffer(10000));
 
 // Load NAIP
 var dataset = ee.ImageCollection('USDA/NAIP/DOQQ')
     .filterDate(start_date+'-1-01', end_date+'-12-31')
-    .filterBounds(geometry);
+    .filterBounds(geom);
 var NAIP = dataset.select(['R', 'G', 'B'])
     .qualityMosaic('B')
-    .clip(geometry.buffer(1000));
+    .clip(geom.buffer(1000));
 var trueColorVis = {min: 0.0, max: 255.0,};
 
 //#####################\\
 //     Map Imagery     \\
 //#####################\\
 
-Map.centerObject(geometry, 18)
 Map.addLayer(NAIP, trueColorVis, 'NAIP', true);
 Map.addLayer(Sentinel, {bands: ['B4', 'B3', 'B2'], min: 0, max: 0.3}, 'Sentinel', true);
 Map.addLayer(ls, visParams, "Landsat", true);
