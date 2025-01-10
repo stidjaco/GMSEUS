@@ -1,5 +1,5 @@
 <p align="center">
-    <img width="600" src = https://github.com/stidjaco/GMSEUS/blob/master/images/GMSEUS_githubheader.png>
+    <img width="1008" src = "https://github.com/stidjaco/GMSEUS/blob/main/images/GMSEUS_logo_v1.png">
  </p>
 
 # A distributed ground-mounted solar energy dataset with sub-array design metadata in the United States
