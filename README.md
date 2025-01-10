@@ -115,6 +115,7 @@ All data products are available in the Zenodo Repository. All input datasets can
 
 # Considerations for updates in Version 2
 
+* Add tilt to preprocessing steps in `script1` then update Check Tilt in `script7`
 * Consider dropping CWSD on spatial priority list, often qualitatively under-represents array bounds. 
 * Consider installation year accuracy from TZ-SAM, should it be the constructed_before date alone, or average of before and after? Currently average. 
 * Consider making QA/QC criteria less strict, removal of panel groupings to generate array area first?
