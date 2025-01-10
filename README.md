@@ -1,3 +1,7 @@
+<p align="center">
+    <img width="600" src = https://github.com/stidjaco/GMSEUS/main/images/GMSEUS_githubheader.png>
+ </p>
+
 # A distributed ground-mounted solar energy dataset with sub-array design metadata in the United States
 Repository for creating and maintaining the Ground-Mounted Solar Energy in the United States (GM-SEUS) spatiotemporal dataset of solar arrays and panel-rows using existing datasets, machine learning, and object-based image analysis to enhance existing sources. A paper in is preparation for this dataset. 
 
@@ -27,7 +31,7 @@ Solar energy generating systems are a critical component of net-zero infrastruct
 * **NREL Innovative Solar Practices Integrated with Rural Economies and Ecosystems (InSPIRE) Database**: Downloaded from [InSPIRE Portal](https://openei.org/wiki/InSPIRE/Agrivoltaics_Map), Last Download: 12-11-2024,
 * **LBNL Utility-Scale Solar (USS), 2024 Edition**: Downloaded from [LBNL Utility-Scale Solar Portal](hhttps://emp.lbl.gov/utility-scale-solar/), Last Downloaded: 11-16-2024 (Up-to-date as of 12-11-2024), Large excel report, project level data was copied from original report .xlsx to a new .csv from Individual_Project_Data tab
 * **NREL PV Data Acquisition (PV-DAQ) Database**: Downloaded from [PV-DAQ Portal - Available Systems Information](https://data.openei.org/submissions/4568), and [PVDAQ Data Map](https://openei.org/wiki/PVDAQ/PVData_Map), Last Downloaded: 07-23-2024 (Up-to-date as of 12-11-2024)
-* **International Energy Agency (IEA) & NREL Solar Power and Chemical Energy System (SolarPACES) Database**: Downloaded from [Project Page](https://solarpaces.nrel.gov/), Last Downloaded: 07-29-2024 (Up-to-date as of 10-11-2024), More information at [US CSP Project Pages](https://solarpaces.nrel.gov/by-country/US)
+* **International Energy Agency (IEA) & NREL Solar Power and Chemical Energy System (SolarPACES) Database**: Downloaded from [Project Page](https://solarpaces.nrel.gov/), Last Downloaded: 07-29-2024 (Up-to-date as of 12-11-2024), More information at [US CSP Project Pages](https://solarpaces.nrel.gov/by-country/US)
   * While SolarPACES is the overarching project (and how we refer to the dataset here), the product is called [CSP.guru](https://csp.guru/)
 * **Global Solar Power Tracker (GSPT) from Global Energy Monitor (GEM) and TransistionZero**: Downloaded from [GEM Portal](https://globalenergymonitor.org/download-data-success/), Last Downloaded: 07-24-2024 (Up-to-date as of 12-11-2024), Access request required.
 * **World Resource Institute (WRI) Global Power Plant Database (GPPDB)**: Downloaded from [WRI Portal](https://datasets.wri.org/dataset/globalpowerplantdatabase), Last Downloaded: 07-30-2024 (Up-to-date as of 12-11-2024), Version 1.3.0
