@@ -119,6 +119,7 @@ All data products are available in the Zenodo Repository. All input datasets can
 
 # Considerations for updates in Version 2
 
+* Do georectification after creation of dataset. Run georectified points indpendently, since we sometime copy spatial attributes from existing installations. When we do this, we "steal" spatial information from a Source dataset and consider the Source "GMSEUSgeorect", which helps with attributing value-added attributes to arrays who's bounds are not within 190m of the point-data, but means we have to treat them seperately until the end of `script7`. This means we will have to update all "checks" in `script7`.
 * Add tilt to preprocessing steps in `script1` then update Check Tilt in `script7`
 * Consider dropping CWSD on spatial priority list, often qualitatively under-represents array bounds. 
 * Consider installation year accuracy from TZ-SAM, should it be the constructed_before date alone, or average of before and after? Currently average. 
