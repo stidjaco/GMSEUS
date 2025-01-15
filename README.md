@@ -122,10 +122,10 @@ All data products are available in the Zenodo Repository. All input datasets can
 * Add tilt to preprocessing steps in `script1` then update Check Tilt in `script7`
 * Consider dropping CWSD on spatial priority list, often qualitatively under-represents array bounds. 
 * Consider installation year accuracy from TZ-SAM, should it be the constructed_before date alone, or average of before and after? Currently average. 
-* Consider making QA/QC criteria less strict, removal of panel groupings to generate array area first?
+* Consider moving panel-row QAQC3 to script5 with other QAQC (currently script7). 
 * Manually digitize/georectify remaining point data (1,490 points)
 * Consider following methods of TZ-SAM for version updates: Compile into *raw_polygons* and consider spatial quality that way. 
-* TZ-SAM also contains *raw_polygons*, which are all overlapping polygon shapefiles from all sources (including prior TZ-SAM versions). Could be useful in the future, or even a pathway that we use to share data. 
+    * TZ-SAM also contains *raw_polygons*, which are all overlapping polygon shapefiles from all sources (including prior TZ-SAM versions). Could be useful in the future, or even a pathway that we use to share data. 
 * Solve overlap issue due to USPVDB array boundary "cut" from V1 to V2
     * Choose if new array delineation in script5 should be independent or dependent on existing array boundaries (group by arrayID or only by proximity then explode?). Currently group by arrayID.
     * Would result in array boundaries that may overlap multiple original array shapes (maybe only a problem for cut USPVDB boundaries)
