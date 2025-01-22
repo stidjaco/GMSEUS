@@ -124,6 +124,7 @@ All data products are available in the Zenodo Repository. All input datasets can
 * Consider installation year accuracy from TZ-SAM, should it be the constructed_before date alone, or average of before and after? Currently average. 
 * Consider moving panel-row QAQC3 to script5 with other QAQC (currently script7). 
 * Manually digitize/georectify remaining point data (1,490 points)
+* Some OSM panel-rows are module assembly, can be buffered and dissovled in `script1` by 1 meter? Result is a few fixed-axis arrays that look like dua-axis. 
 * Regarding CWSD:
     * In `script1` preprocessing, remove double-counted exact overlapping arrays (installation year distinct, consider how to approach). We currently have to do this in `script7`.
     * Consider dropping CWSD on spatial priority list, often qualitatively under-represents array bounds. 
