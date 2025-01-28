@@ -29,15 +29,16 @@ exports.doc = 'LandTrendr and Installation Year Extraction';
 //########################################################################################################
 
 // Set arrays
-var arrays = ee.FeatureCollection('projects/ee-stidjaco/assets/BigPanel/GMSEUS_Arrays_instYr');
+//var arrays = ee.FeatureCollection('projects/ee-stidjaco/assets/BigPanel/GMSEUS_Arrays_instYr');
+var arrays = ee.FeatureCollection('projects/ee-stidjaco/assets/BigPanel/GMSEUS_Arrays_instYr_Update');
 
 // Set subset range (0 to 1000 for full dataset) -- NBD 620 and 930 (by 5)
 var start = 0; 
 var end = 1000;
-var step = 5;
+var step = 25;
 
 // Give the run some names
-var runName = "123124" ;
+var runName = "012625" ;
 
 // Select multiple indices (no longer all at once, rapidly reach computational limit)
 var index1 = 'NDPVI';
@@ -54,8 +55,24 @@ var index11 = 'TCW';
 var index12 = 'TCB';
 //var index13 = 'NDSI'; // Normalized difference snow index: snow still covers panels, low likelihood of change in annual snow reflectance due to solar alone
 
+/*
+Failed (by 5): 
+NDPVI: -
+NBD: -
+BR: -
+NDWI: -
+NDVI: -
+EVI: -
+NBR: -
+NDMI: -
+TCA: (-)
+TCG: (-)
+TCW: 
+TCB:
+*/
+
 // Set index 
-var index = index8
+var index = index12
 
 // Set seed
 var seed = 15; 
@@ -258,7 +275,7 @@ var exportInstYr = function(subset){
       description: descriptionName + subset,
       fileFormat: 'CSV',
       folder: folderName + runName,
-      selectors: ['arrayID', 'nativeID', 'instYr', 'instYrLT', 'modType', 'Source'] // '.geo' -- if GeoJSON
+      selectors: ['arrayID', 'nativeID', 'tempID', 'instYr', 'instYrLT', 'modType', 'Source'] // '.geo' -- if GeoJSON
   });
 };
 
