@@ -17,7 +17,7 @@ Contact: stidjaco@msu.edu (Jacob Stid)
 In this script, we use available NAIP, Sentinel, and Landsat Imagery to check the installation year of solar energy systems. 
 This script (script7a) can be used in collaboartion with script7b
 When an installation year is acquired, manually attribute it in script7
-When an exact installation year is uncertain, use the first year of high confidence (often with NAIP). 
+When an exact installation year is uncertain, use the first year of high confidence (often, with NAIP). 
 */
 
 //#######################\\
@@ -34,9 +34,17 @@ var gmseusNoInstYr = gmseus.filter(ee.Filter.eq("instYr", -9999));
 print("Number of array chunks missing an instYr:", gmseusNoInstYr.size());
 print("Missing tempIDs:", gmseusNoInstYr.aggregate_array("tempID"));
 
+// ~~~~~~~~~~~~~~~~~~~~~~~~~ Select automated or manual approach
+
 // Get feature to manually validate 
 var ids = gmseusNoInstYr.aggregate_array("tempID"); 
-var feature = ee.Feature(gmseusNoInstYr.filter(ee.Filter.eq("tempID", ids.get(1))).first()); print("Array ID being assessed: ", feature.getNumber("tempID"));
+var feature = ee.Feature(gmseusNoInstYr.filter(ee.Filter.eq("tempID", ids.get(0))).first()); print("Array ID being assessed: ", feature.getNumber("tempID"));
+
+// Alternatively, set tempID manually and comment out above code
+//var id = '1983';
+//var feature = ee.Feature(gmseusNoInstYr.filter(ee.Filter.eq("tempID", id)).first()); print("Array ID being assessed: ", feature.getNumber("tempID"));
+
+// ~~~~~~~~~~~~~~~~~~~~~~~~~ Set geometry and focus
 
 // Set feature geometry as imagery input
 var geom = feature.geometry(); Map.addLayer(geom); Map.centerObject(geom);
@@ -46,7 +54,7 @@ var geom = feature.geometry(); Map.addLayer(geom); Map.centerObject(geom);
 //#############################\\
  
 // Select imagery year 
-var start_date = '2013' ;
+var start_date = '2018' ;
 var end_date = start_date; // Selects imagery within the same year
 
 //#####################\\
