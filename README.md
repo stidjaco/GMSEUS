@@ -12,13 +12,13 @@ This is the initial release of GM-SEUS (version 1.0). All input datasets and sol
 
 ## Overview
 
-	Solar energy generating systems are a critical component of net-zero infrastructure, yet comprehensive datasets characterizing systems remain incomplete or not publicly available, particularly at the sub-array level. Leveraging the best freely available existing solar datasets in the US with object-based image analysis and machine learning, we present the Ground-Mounted Solar Energy in the United States (GM-SEUS) dataset, a harmonized, open access, and regularly updated geospatial and temporal repository of solar energy arrays and panel-rows. GM-SEUS v1.0 includes nearly 15,000 commercial- and utility-scale ground-mounted solar photovoltaic and concentrating solar energy arrays (182 GWDC) covering 2,900 km<sup>2</sup> and includes 2.92 million unique solar panel-rows (466 km<sup>2</sup>) within those arrays. We use these newly compiled and delineated solar panel-rows to harmonize and independently estimate several value-added attributes to existing datasets, enhancing consistency across spatiotemporal attributes. Value-added attributes include installation year, azimuth, mount technology, panel-row area and dimensions, inter-row spacing, ground cover ratio, tilt, and installed capacity. By estimating and harmonizing these spatial and temporal attributes of the distributed US solar energy landscape, GM-SEUS supports diverse applications in renewable energy modeling, ecosystem service assessment, and infrastructural planning. 
+Solar energy generating systems are a critical component of net-zero infrastructure, yet comprehensive datasets characterizing systems remain incomplete or not publicly available, particularly at the sub-array level. Leveraging the best freely available existing solar datasets in the US with object-based image analysis and machine learning, we present the Ground-Mounted Solar Energy in the United States (GM-SEUS) dataset, a harmonized, open access, and regularly updated geospatial and temporal repository of solar energy arrays and panel-rows. GM-SEUS v1.0 includes nearly 15,000 commercial- and utility-scale ground-mounted solar photovoltaic and concentrating solar energy arrays (182 GWDC) covering 2,900 km<sup>2</sup> and includes 2.92 million unique solar panel-rows (466 km<sup>2</sup>) within those arrays. We use these newly compiled and delineated solar panel-rows to harmonize and independently estimate several value-added attributes to existing datasets, enhancing consistency across spatiotemporal attributes. Value-added attributes include installation year, azimuth, mount technology, panel-row area and dimensions, inter-row spacing, ground cover ratio, tilt, and installed capacity. By estimating and harmonizing these spatial and temporal attributes of the distributed US solar energy landscape, GM-SEUS supports diverse applications in renewable energy modeling, ecosystem service assessment, and infrastructural planning. 
 
 ![alt text](images/GMSEUS_CONUS_H3.png "GM-SEUS solar array distribution")
 
 ## Approach
 
-GM-SEUS is both a harmonization of existing solar energy array data in the US and a new product of solar panel-row spatiotemporal information, providing new insights on perviously under-reported metadata attributes. We used a combination of machine learning and geographic object-based image analysis, often referred to as GEOBIA or OBIA. Importantly, this new dataset is publicy available, with code available here and the associated Zenodo Repository containing all final products of GM-SEUS v1.0, all intermediate products, and locations for source datasets.
+GM-SEUS is both a harmonization of existing solar energy array data in the US and a new product of solar panel-row spatiotemporal information, providing new insights on perviously under-reported metadata attributes. We used a combination of machine learning and geographic object-based image analysis, often referred to as GEOBIA or OBIA. Importantly, this new dataset is publicly available, with code available here and the associated Zenodo Repository containing all final products of GM-SEUS v1.0, all intermediate products, and locations for source datasets.
 
 We defined a solar array spatial footprint as: _adjacent, existing, and connected rows of solar panel-rows (PV or CSP) of the same installation year, and the row-spacing between them_. Panel-rows are defined by: _spatially-unique collection of one or more panel-assemblies connected by proximity and often sharing one mount, but not necessarily electrically connected_. Datasets with existing solar array boundaries in the United States are the USPVDB, TZ-SAM, OpenStreetMap, and two regional datasets in California’s Central Valley and the Chesapeake Bay area. Datasets containing value-added attributes and point-locations included the NREL Agrivoltaic Map from the InSPIRE initiative, the LBNL Utility-Scale Solar, 2024 Edition Report, IEA and NREL SolarPACES initiative, Global Energy Monitor’s Global Solar Power Tracker, and The World Resources Institute's Global Power Plant Database. 
 
@@ -28,7 +28,7 @@ We removed repeat geometries in order of spatial quality in relation to our devi
 
 Existing solar panel-rows datasets were compiled from OpenStreetMap and Stid et al. (2022). To acquire panel-rows within solar array boundaries without existing panel-row information we used National Agriculture Imagery Program (NAIP) imagery and applied unsupervised object-based image segmentation and supervised machine learning approaches. We classified NAIP imagery using a Random Forest model and four spectral indices with displayed utility in classify solar energy: normalized difference photovoltaic index (NDPVI), normalized blue deviation (NBD), brightness (Br), normalized difference vegetation index (NDVI), normalized difference water index (NDWI). We trained the model using 2,000 panel-row samples from Stid et al. (2022), and 10,000 landcover validation points from Pengra et al. (2020). 
 
-Spatial context was incorporated using object-based imagery analysis methods, including using simple non-iterative clustering (SNIC) of each spectral index’s grey-level co-occurrence matrix (GLCM) sum average. We then clustered SNIC values using X-means clustering, and use the Random Forest model to classify pixel-clusters. We also removed low-quality panel-rows using several object-based metrics of geometrical similarity including minimum (15 m<sup>2</sup>) and maximum (2000 m<sup>2</sup>) panel-row area, perimeter-area-ratio, area-bounding-box, long-edge to short-edge ratios, and compactness, all relative to metric values form existing solar panel-row. 
+Spatial context was incorporated using object-based imagery analysis methods, including using simple non-iterative clustering (SNIC) of each spectral index’s grey-level co-occurrence matrix (GLCM) sum average. We then clustered SNIC values using X-means clustering, and use the Random Forest model to classify pixel-clusters. We also removed low-quality panel-rows using several object-based metrics of geometrical similarity including minimum (15 m<sup>2</sup>) and maximum (2000 m<sup>2</sup>) panel-row area, perimeter-area-ratio, area-bounding-box, long-edge to short-edge ratios, and compactness, all relative to metric values form existing solar panel-row. The logic behind panel-row and new array boundary delineation is shown below. 
 
 ![alt text](images/panelRowDelineationLogic.png "Example panel-row delineation and array boundary logic for each mount technology")
 
@@ -95,62 +95,52 @@ All data products are available in the Zenodo Repository. All input datasets can
 * **GMSEUS_Panels_Final.gpkg**: Final panel-row dataset containing boundaries from existing datasets and newly delineated GM-SEUS panel-rows containing all panel-row-level attributes (NAD83), geopackage and shapefile
 * **GMSEUS_NAIP_Arrays.gpkg**: All array boundaries created by buffer-dissolve-erode method of newly delineated (NAIP) GM-SEUS panel-rows (NAD83), geopackage and shapefile
 * **GMSEUS_NAIP_Panels.gpkg**: All newly delineated panel-row boundaries (NAD83), geopackage and shapefile
+* **GMSEUS_NAIP_PanelsNoQAQC.gpkg**: All newly delineated panel-rows from NAIP imagery without any quality control (EPSG:102003), geopackage and shapefile
 * **GMSEUS_Arrays_Final.csv**: Final array dataset containing all array-level attributes and array centroid coordinates (WGS84), comma separated values
 * **NAIPtrainRF.csv**: Training dataset of 12,000 NAIP training points (2,000 class–1) containing class values, spectral index values, the year of NAIP imagery accessed, and point coordinates (WGS84), comma separated values
 * **NAIPclassifyRF.csv**: Random forest classifier trees and weights, comma separated values
 
 ### We provide the following attribute fields in GM-SEUS Final Arrays
 
-* **arrayID**: unique numeric ID of each solar array in GM-SEUS, unitless
-* **Source**: array boundary source from existing datasets, unitless
-* **newBound**: binary, whether the array boundary was derived from the existing data sources (0) or from a buffer-dissolve-erode of panel-rows following our definition of an array boundary (1), unitless
-* **totArea**: total land footprint of panel-rows and the space between them, m2
-* **totRowArea**: If numRow is greater than 0, sum of rowArea within an array. Otherwise, estimated totRowArea based on totArea and GCR1 estimation where no panel-rows were detected, m2
-* **numRow**: number of panel-rows within an array, m2
-* **instYr**: installation year from existing sources, with gaps filled in by instYrLT, year
-* **instYrLT**: LandTrendr-derived installation year independent of any data source other than Landsat spectral trajectory, year
-* **capMW**: installed peak capacity from existing sources, with gaps filled in by capMWest, MW
-* **capMWest**: estimated installed peak capacity derived from capacity to panel-row area relationships described in Eq. 13, 14, 15, and 16 independent of any data source, MWDC or MWth
-* **modType**: reported panel-row (module) technology at the array level (c-si, thin-film, csp). If unreported, assumed to be c-si, unitless
-* **effInit**: initial panel-rows efficiency from existing sources with gaps filled in by based on efficiency estimation from modType and instYr taken from the annual Tracking the Sun report, %
-* **GCR1**: 0-1, the ratio of totRowArea to the total area of panel-rows and the space between them. For arrays with complete panel delineation and arrays where newBound is 1, this is equivalent to totArea. This is also called packing factor. If numRow is greater than 0, GCR1 is an actual GCR1 for the array. Otherwise, GCR is estimated by linear regression of latitude and longitude by mount and module type, unitless
-* **GCR2**: 0-1, the ratio of the average width of the panel-row short edge (rowWidth) to the horizontal ground distance between identical panel-rows points, defined as the sum of widthAvg and rowSpace.  If numRow is greater than 0, GCR1 is an actual GCR2 for the array. Otherwise, GCR1 is estimated by linear regression of latitude and longitude by mount and module type, unitless
-* **mount**: mount technology derived from the azimuth and geometry of each panel-row within the array. Either ‘fixed_axis’, ‘single_axis’, ‘dual_axis’, or ‘mixed_’ with a lower-case letter denoting the mixed mounts (e.g., mixed_fs), unitless
-* **tilt**: panel-row tilt for fixed-axis arrays from existing sources and estimated by a latitudinal relationship, degrees from zenith
-* **avgAzimuth**: median estimated azimuth of panel-rows within array bounds. For single-axis tracking arrays , degrees from north
-* **avgLength**: median length of the long edge of panel-rows within an array, meters
-* **avgWidth**: median length of the short edge of panel-rows within an array, meters
-* **avgSpace**: median spacing between the solar array rows, in meters, between edges of the panel-row projected onto the ground, meters
-* **geometry**: best new or available geometry matching the array definition which contains panel-rows and the space between them, derived from existing sources (newBound = 0) or from a buffer-dissolve-erode of newly delineated panel-rows (newBound = 1), NAD83
-* **version**: GM-SEUS version in which the array geometry and attributes are derived. Each subsequent version will re-derive new geometries and the best delineation from each version will be selected, unitless
+* **arrayID**: unique numeric ID of each solar array in GM-SEUS, unitless  
+* **Source**: array boundary source from existing datasets, unitless  
+* **nativeID**: numeric ID of each solar array from the source spatial dataset if an indexing system existed, unitless  
+* **latitude**: latitude of the array boundary centroid (NAD83), decimal degrees  
+* **longitude**: longitude of the array boundary centroid (NAD83), decimal degrees  
+* **newBound**: binary, whether the array boundary was derived from the existing data sources (0) or from a buffer-dissolve-erode of panel-rows following our definition of an array boundary (1), unitless  
+* **totArea**: total land footprint of panel-rows and the space between them, m²  
+* **totRowArea**: If **numRow** is greater than 0, sum of rowArea within an array. Otherwise, estimated based on **totArea** and **GCR1** estimation where no panel-rows were detected, m²  
+* **numRow**: number of panel-rows within an array, m²  
+* **instYr**: installation year from existing sources, with gaps filled in by **instYrLT**, year  
+* **instYrLT**: LandTrendr-derived installation year independent of any data source other than Landsat spectral trajectory, year  
+* **capMW**: installed peak capacity from existing sources, with gaps filled in by **capMWest**, MWDC or MWth  
+* **capMWest**: estimated installed peak capacity derived from capacity to panel-row area relationships described in Eq. 11-14 independent of any data source, MWDC or MWth  
+* **modType**: reported panel-row (module) technology at the array level (c-si, thin-film, csp). If unreported, assumed to be c-si, unitless  
+* **effInit**: initial panel-rows efficiency from existing sources with gaps filled in based on efficiency estimation from **modType** and **instYr** taken from the annual Tracking the Sun report, %  
+* **GCR1**: 0-1, the ratio of **totRowArea** to the total area of panel-rows and the space between them. For arrays with complete panel delineation and arrays where **newBound** is 1, this is equivalent to **totArea**. This is also called packing factor. If **numRow** is greater than 0, **GCR1** is an actual **GCR1** for the array. Otherwise, **GCR1** is estimated by linear regression of latitude and longitude by mount and module type, unitless  
+* **GCR2**: 0-1, the ratio of the average width of the panel-row short edge (**rowWidth**) to the horizontal ground distance between identical panel-rows points, defined as the sum of **widthAvg** and **rowSpace**. If **numRow** is greater than 0, **GCR2** is an actual **GCR2** for the array. Otherwise, **GCR2** is estimated by linear regression of latitude and longitude by mount and module type, unitless  
+* **mount**: mount technology derived from the azimuth and geometry of each panel-row within the array or from existing sources, with preference given to newly derived mount technology. Either `fixed_axis`, `single_axis`, `dual_axis`, or `mixed_` with a lower-case letter denoting the mixed mounts (e.g., `mixed_fs`), unitless  
+* **tilt**: panel-row tilt for fixed-axis arrays (including arrays with mixed-mounting) from existing sources and filled in by **tiltEst**, degrees from zenith  
+* **tiltEst**: estimated panel-row tilt for fixed-axis arrays (including arrays with mixed-mounting) estimated using pvlib, degrees from zenith  
+* **avgAzimuth**: median estimated azimuth of panel-rows within array bounds or reported azimuth from existing sources, with preference given to newly estimated azimuth. For single-axis tracking arrays, this is the cardinal direction of the long edge. For all other mount types, this is the cardinal direction of the panel-row face, degrees from north  
+* **avgLength**: median length of the long edge of panel-rows within an array, meters  
+* **avgWidth**: median length of the short edge of panel-rows within an array, meters  
+* **avgSpace**: median spacing between the solar array rows, in meters, between edges of the panel-row projected onto the ground, meters  
+* **STATEFP**: unique geographic identifier for the U.S. Census Bureau state entity, unitless  
+* **COUNTYFP**: unique geographic identifier for the U.S. Census Bureau county entity, unitless  
+* **geometry**: best new or available geometry matching the array definition which contains panel-rows and the space between them, derived from existing sources (**newBound = 0**) or from a buffer-dissolve-erode of newly delineated panel-rows (**newBound = 1**), meters  
+* **version**: GM-SEUS version in which the array geometry and attributes are derived. Each subsequent version will re-derive new geometries and the best delineation from each version will be selected, unitless  
 
 ### We provide the following attribute fields in GM-SEUS Final Panel-Rows
 
-* **panelID**: unique numeric ID of the panel-row in GM-SEUS, unitless
-* **arrayID**: unique numeric ID of each solar array in GM-SEUS that the panel-row is associated with, unitless
-* **Source**: panel-row boundary source from OSM, CCVPV, or GM-SEUS, unitless
-* **rowArea**: top-down or apparent panel-row area directly from the output of image classification, m2
-* **rowWidth**: length of the short-edge of the panel-row, meters
-* **rowLength**: length of the long-edge of the panel-row, meters
-* **rowAzimuth**: azimuth of the panel-row, with 0 at North, degrees
-* **rowMount**: mount technology (fixed-axis, single-axis, or dual-axis) of the panel-row, unitless
-* **rowSpace**: the inter-row spacing between the panel-row and the nearest panel-row in the azimuthal direction (fixed- and single-axis) or any direction (dual-axis), meters
-* **geometry**: top-down or perceived geometry, NAD83
-* **version**: GM-SEUS version in which the panel-row geometry and attributes are derived. Each subsequent version will re-derive new geometries and the best delineation from each version will be selected, unitless
-
-# Considerations for updates in Version 2
-
-* Do georectification after creation of dataset. Run georectified points indpendently, since we sometime copy spatial attributes from existing installations. When we do this, we "steal" spatial information from a Source dataset and consider the Source "GMSEUSgeorect", which helps with attributing value-added attributes to arrays who's bounds are not within 190m of the point-data, but means we have to treat them seperately until the end of `script7`. This means we will have to update all "checks" in `script7`.
-* Add tilt to preprocessing steps in `script1` then update Check Tilt in `script7`
-* Consider installation year accuracy from TZ-SAM, should it be the constructed_before date alone, or average of before and after? Currently average. 
-* Consider moving panel-row QAQC3 to script5 with other QAQC (currently script7). 
-* Manually digitize/georectify remaining point data (1,490 points)
-* Some OSM panel-rows are module assembly, can be buffered and dissovled in `script1` by 1 meter? Result is a few fixed-axis arrays that look like dua-axis (e.g., nativeID: 10020, OSM, and 10039). 
-* Regarding CWSD:
-    * In `script1` preprocessing, remove double-counted exact overlapping arrays (installation year distinct, consider how to approach). We currently have to do this in `script7`.
-    * Consider dropping CWSD on spatial priority list, often qualitatively under-represents array bounds. 
-* Consider following methods of TZ-SAM for version updates: Compile into *raw_polygons* and consider spatial quality that way. 
-    * TZ-SAM also contains *raw_polygons*, which are all overlapping polygon shapefiles from all sources (including prior TZ-SAM versions). Could be useful in the future, or even a pathway that we use to share data. 
-* Solve overlap issue due to USPVDB array boundary "cut" from V1 to V2
-    * Choose if new array delineation in script5 should be independent or dependent on existing array boundaries (group by arrayID or only by proximity then explode?). Currently group by arrayID.
-    * Would result in array boundaries that may overlap multiple original array shapes (maybe only a problem for cut USPVDB boundaries)
+* **panelID**: unique numeric ID of the panel-row in GM-SEUS, unitless  
+* **arrayID**: unique numeric ID of each solar array in GM-SEUS that the panel-row is associated with, unitless  
+* **Source**: panel-row boundary source from OSM, CCVPV, or GM-SEUS, unitless  
+* **rowArea**: top-down or apparent panel-row area directly from the output of image classification, m²  
+* **rowWidth**: length of the short edge of the panel-row, meters  
+* **rowLength**: length of the long edge of the panel-row, meters  
+* **rowAzimuth**: azimuth of the panel-row, with 0 at North, degrees  
+* **rowMount**: mount technology (fixed-axis, single-axis, or dual-axis) of the panel-row, unitless  
+* **rowSpace**: the inter-row spacing between the panel-row and the nearest panel-row in the azimuthal direction (fixed- and single-axis) or any direction (dual-axis), meters  
+* **geometry**: top-down or perceived geometry, meters  
+* **version**: GM-SEUS version in which the panel-row geometry and attributes are derived. Each subsequent version will re-derive new geometries and the best delineation from each version will be selected, unitless  
