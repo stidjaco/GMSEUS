@@ -12,7 +12,7 @@ This is the initial release of GM-SEUS (version 1.0). All input datasets and sol
 
 ## Overview
 
-Solar energy generating systems are a critical component of net-zero infrastructure, yet comprehensive datasets characterizing systems remain incomplete or not publicly available, particularly at the sub-array level. Leveraging the best freely available existing solar datasets in the US with object-based image analysis and machine learning, we present the Ground-Mounted Solar Energy in the United States (GM-SEUS) dataset, a harmonized, open access, and regularly updated geospatial and temporal repository of solar energy arrays and panel-rows. GM-SEUS v1.0 includes nearly 15,000 commercial- and utility-scale ground-mounted solar photovoltaic and concentrating solar energy arrays (182 GWDC) covering 2,900 km<sup>2</sup> and includes 2.92 million unique solar panel-rows (466 km<sup>2</sup>) within those arrays. We use these newly compiled and delineated solar panel-rows to harmonize and independently estimate several value-added attributes to existing datasets, enhancing consistency across spatiotemporal attributes. Value-added attributes include installation year, azimuth, mount technology, panel-row area and dimensions, inter-row spacing, ground cover ratio, tilt, and installed capacity. By estimating and harmonizing these spatial and temporal attributes of the distributed US solar energy landscape, GM-SEUS supports diverse applications in renewable energy modeling, ecosystem service assessment, and infrastructural planning. 
+Solar energy generating systems are a critical component of net-zero infrastructure, yet comprehensive datasets characterizing systems remain incomplete or not publicly available, particularly at the sub-array level. Leveraging the best freely available existing solar datasets in the US with object-based image analysis and machine learning, we present the Ground-Mounted Solar Energy in the United States (GM-SEUS) dataset, a harmonized, open access, and regularly updated geospatial and temporal repository of solar energy arrays and panel-rows. GM-SEUS v1.0 includes nearly 15,000 commercial- and utility-scale ground-mounted solar photovoltaic and concentrating solar energy arrays (186 GWDC) covering 2,900 km<sup>2</sup> and includes 2.92 million unique solar panel-rows (466 km<sup>2</sup>) within those arrays. We use these newly compiled and delineated solar panel-rows to harmonize and independently estimate several value-added attributes to existing datasets, enhancing consistency across spatiotemporal attributes. Value-added attributes include installation year, azimuth, mount technology, panel-row area and dimensions, inter-row spacing, ground cover ratio, tilt, and installed capacity. By estimating and harmonizing these spatial and temporal attributes of the distributed US solar energy landscape, GM-SEUS supports diverse applications in renewable energy modeling, ecosystem service assessment, and infrastructural planning. 
 
 ![alt text](images/GMSEUS_CONUS_H3.png "GM-SEUS solar array distribution")
 
@@ -56,7 +56,7 @@ Spatial context was incorporated using object-based imagery analysis methods, in
 
 ## Codebase Description:
 
-All code used in the acquisition and development of this dataset is available in this [Github repository](https://github.com/stidjaco/GMSEUS). Files are ipynb or txt files, where txt files are JavaScript files intended to be run in the [GEE code editor](https://code.earthengine.google.com/). 
+All code used in the acquisition and development of this dataset is available in this [Github repository](https://github.com/stidjaco/GMSEUS). Files are ipynb or txt files, where txt files are JavaScript files intended to be run in the [GEE code editor](https://code.earthengine.google.com/). Files are named in order of operation (e.g., `script1` < `script2`).
 
 ### The GM-SEUS open code repository contains the following files
 
@@ -87,7 +87,7 @@ Supplementary Files:
 * `scriptPlot_maps.ipynb`: Python file for printing and export relevant result maps.
   
 ## Dataset Description: 
-All data products are available in the Zenodo Repository. All input datasets can be downloaded from source files described in the associated paper, at the top of this document, and at the top of `script1`. All intermediate products are available upon request, and are automatically generated in the processing of the code repo. 
+All data products are available in the Zenodo Repository. All input datasets can be downloaded from source files described in the associated paper, at the top of this document, and at the top of `script1`. All intermediate products are available upon request, and are automatically generated in the processing of the code repo. All spatial files in the final database are provided as shapefiles, geopackages, and comma separated values. 
 
 ### The GM-SEUS open repository contains the following files
 
@@ -96,7 +96,6 @@ All data products are available in the Zenodo Repository. All input datasets can
 * **GMSEUS_NAIP_Arrays.gpkg**: All array boundaries created by buffer-dissolve-erode method of newly delineated (NAIP) GM-SEUS panel-rows (NAD83), geopackage and shapefile
 * **GMSEUS_NAIP_Panels.gpkg**: All newly delineated panel-row boundaries (NAD83), geopackage and shapefile
 * **GMSEUS_NAIP_PanelsNoQAQC.gpkg**: All newly delineated panel-rows from NAIP imagery without any quality control (EPSG:102003), geopackage and shapefile
-* **GMSEUS_Arrays_Final.csv**: Final array dataset containing all array-level attributes and array centroid coordinates (WGS84), comma separated values
 * **NAIPtrainRF.csv**: Training dataset of 12,000 NAIP training points (2,000 class–1) containing class values, spectral index values, the year of NAIP imagery accessed, and point coordinates (WGS84), comma separated values
 * **NAIPclassifyRF.csv**: Random forest classifier trees and weights, comma separated values
 
@@ -119,9 +118,9 @@ All data products are available in the Zenodo Repository. All input datasets can
 * **effInit**: initial panel-rows efficiency from existing sources with gaps filled in based on efficiency estimation from **modType** and **instYr** taken from the annual Tracking the Sun report, %  
 * **GCR1**: 0-1, the ratio of **totRowArea** to the total area of panel-rows and the space between them. For arrays with complete panel delineation and arrays where **newBound** is 1, this is equivalent to **totArea**. This is also called packing factor. If **numRow** is greater than 0, **GCR1** is an actual **GCR1** for the array. Otherwise, **GCR1** is estimated by linear regression of latitude and longitude by mount and module type, unitless  
 * **GCR2**: 0-1, the ratio of the average width of the panel-row short edge (**rowWidth**) to the horizontal ground distance between identical panel-rows points, defined as the sum of **widthAvg** and **rowSpace**. If **numRow** is greater than 0, **GCR2** is an actual **GCR2** for the array. Otherwise, **GCR2** is estimated by linear regression of latitude and longitude by mount and module type, unitless  
-* **mount**: mount technology derived from the azimuth and geometry of each panel-row within the array or from existing sources, with preference given to newly derived mount technology. Either `fixed_axis`, `single_axis`, `dual_axis`, or `mixed_` with a lower-case letter denoting the mixed mounts (e.g., `mixed_fs`), unitless  
+* **mount**: mount technology derived from the azimuth and geometry of each panel-row within the array or from existing sources, with preference given to newly derived mount technology. Either `fixed_axis`, `single_axis`, `dual_axis`, `mixed`, or `mixed_` with a lower-case letter denoting the mixed mounts (e.g., `mixed_fs`), unitless  
 * **tilt**: panel-row tilt for fixed-axis arrays (including arrays with mixed-mounting) from existing sources and filled in by **tiltEst**, degrees from zenith  
-* **tiltEst**: estimated panel-row tilt for fixed-axis arrays (including arrays with mixed-mounting) estimated using pvlib, degrees from zenith  
+* **tiltEst**: estimated panel-row tilt for fixed-axis arrays (including arrays with mixed-mounting) estimated using pvlib, degrees above horizontal
 * **avgAzimuth**: median estimated azimuth of panel-rows within array bounds or reported azimuth from existing sources, with preference given to newly estimated azimuth. For single-axis tracking arrays, this is the cardinal direction of the long edge. For all other mount types, this is the cardinal direction of the panel-row face, degrees from north  
 * **avgLength**: median length of the long edge of panel-rows within an array, meters  
 * **avgWidth**: median length of the short edge of panel-rows within an array, meters  
