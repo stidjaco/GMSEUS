@@ -87,7 +87,7 @@ Supplementary Files:
 * `scriptPlot_maps.ipynb`: Python file for printing and export relevant result maps.
   
 ## Dataset Description: 
-All data products are available in the Zenodo Repository. All input datasets can be downloaded from source files described in the associated paper, at the top of this document, and at the top of `script1`. All intermediate products are available upon request, and are automatically generated in the processing of the code repo. 
+All data products are available in the Zenodo Repository. All input datasets can be downloaded from source files described in the associated paper, at the top of this document, and at the top of `script1`. All intermediate products are available upon request, and are automatically generated in the processing of the code repo. All spatial files in the final database are provided as shapefiles, geopackages, and comma separated values. 
 
 ### The GM-SEUS open repository contains the following files
 
@@ -96,7 +96,6 @@ All data products are available in the Zenodo Repository. All input datasets can
 * **GMSEUS_NAIP_Arrays.gpkg**: All array boundaries created by buffer-dissolve-erode method of newly delineated (NAIP) GM-SEUS panel-rows (NAD83), geopackage and shapefile
 * **GMSEUS_NAIP_Panels.gpkg**: All newly delineated panel-row boundaries (NAD83), geopackage and shapefile
 * **GMSEUS_NAIP_PanelsNoQAQC.gpkg**: All newly delineated panel-rows from NAIP imagery without any quality control (EPSG:102003), geopackage and shapefile
-* **GMSEUS_Arrays_Final.csv**: Final array dataset containing all array-level attributes and array centroid coordinates (WGS84), comma separated values
 * **NAIPtrainRF.csv**: Training dataset of 12,000 NAIP training points (2,000 class–1) containing class values, spectral index values, the year of NAIP imagery accessed, and point coordinates (WGS84), comma separated values
 * **NAIPclassifyRF.csv**: Random forest classifier trees and weights, comma separated values
 
@@ -121,7 +120,7 @@ All data products are available in the Zenodo Repository. All input datasets can
 * **GCR2**: 0-1, the ratio of the average width of the panel-row short edge (**rowWidth**) to the horizontal ground distance between identical panel-rows points, defined as the sum of **widthAvg** and **rowSpace**. If **numRow** is greater than 0, **GCR2** is an actual **GCR2** for the array. Otherwise, **GCR2** is estimated by linear regression of latitude and longitude by mount and module type, unitless  
 * **mount**: mount technology derived from the azimuth and geometry of each panel-row within the array or from existing sources, with preference given to newly derived mount technology. Either `fixed_axis`, `single_axis`, `dual_axis`, or `mixed_` with a lower-case letter denoting the mixed mounts (e.g., `mixed_fs`), unitless  
 * **tilt**: panel-row tilt for fixed-axis arrays (including arrays with mixed-mounting) from existing sources and filled in by **tiltEst**, degrees from zenith  
-* **tiltEst**: estimated panel-row tilt for fixed-axis arrays (including arrays with mixed-mounting) estimated using pvlib, degrees from zenith  
+* **tiltEst**: estimated panel-row tilt for fixed-axis arrays (including arrays with mixed-mounting) estimated using pvlib, degrees above horizontal
 * **avgAzimuth**: median estimated azimuth of panel-rows within array bounds or reported azimuth from existing sources, with preference given to newly estimated azimuth. For single-axis tracking arrays, this is the cardinal direction of the long edge. For all other mount types, this is the cardinal direction of the panel-row face, degrees from north  
 * **avgLength**: median length of the long edge of panel-rows within an array, meters  
 * **avgWidth**: median length of the short edge of panel-rows within an array, meters  
