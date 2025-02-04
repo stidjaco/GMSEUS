@@ -2,8 +2,8 @@
     <img width="1008" src = "https://github.com/stidjaco/GMSEUS/blob/main/images/GMSEUS_logo_v1.png">
  </p>
 
-# A distributed ground-mounted solar energy dataset with sub-array design metadata in the United States
-Repository for creating and maintaining the Ground-Mounted Solar Energy in the United States (GM-SEUS) spatiotemporal dataset of solar arrays and panel-rows using existing datasets, machine learning, and object-based image analysis to enhance existing sources. A paper in is preparation for this dataset. 
+# A comprehensive ground-mounted solar energy dataset with sub-array design metadata in the United States
+Code epository for creating and maintaining the Ground-Mounted Solar Energy in the United States (GM-SEUS) spatiotemporal dataset of solar arrays and panel-rows using existing datasets, machine learning, and object-based image analysis to enhance existing sources. A paper in is preparation for this dataset. 
 
 ## Current Version Notes
 This is the initial release of GM-SEUS (version 1.0). All input datasets and solar panel-row delineation results are up-to-date through December 11th, 2024. 
@@ -18,7 +18,7 @@ Solar energy generating systems are a critical component of net-zero infrastruct
 
 ## Approach
 
-GM-SEUS is both a harmonization of existing solar energy array data in the US and a new product of solar panel-row spatiotemporal information, providing new insights on perviously under-reported metadata attributes. We used a combination of machine learning and geographic object-based image analysis, often referred to as GEOBIA or OBIA. Importantly, this new dataset is publicly available, with code available here and the associated Zenodo Repository containing all final products of GM-SEUS v1.0, all intermediate products, and locations for source datasets.
+GM-SEUS is both a harmonization of existing solar energy array data in the US and a new product of solar panel-row spatiotemporal information, providing new insights on perviously under-reported metadata attributes. We used a combination of machine learning and geographic object-based image analysis, often referred to as GEOBIA or OBIA. Importantly, this new dataset is publicly available, with code available here and the associated Zenodo Repository containing all final products of GM-SEUS v1.0 and locations for source datasets.
 
 We defined a solar array spatial footprint as: _adjacent, existing, and connected rows of solar panel-rows (PV or CSP) of the same installation year, and the row-spacing between them_. Panel-rows are defined by: _spatially-unique collection of one or more panel-assemblies connected by proximity and often sharing one mount, but not necessarily electrically connected_. Datasets with existing solar array boundaries in the United States are the USPVDB, TZ-SAM, OpenStreetMap, and two regional datasets in California’s Central Valley and the Chesapeake Bay area. Datasets containing value-added attributes and point-locations included the NREL Agrivoltaic Map from the InSPIRE initiative, the LBNL Utility-Scale Solar, 2024 Edition Report, IEA and NREL SolarPACES initiative, Global Energy Monitor’s Global Solar Power Tracker, and The World Resources Institute's Global Power Plant Database. 
 
@@ -83,21 +83,25 @@ Supplementary Files:
 * `script7a_validateInstYrImagery.txt`: GEE file for manual validation of installation year using available NAIP, Sentinel-2, and Landsat 7 ETM+ imagery. 
 * `script7b_validateInstYrTimeSeries.txt`: GEE file for LandTrendr provided User-Interface (UI) file with solar PV indices included. 
 * `scriptLandTrendrSolarIndex.txt`: GEE file for LandTrendr temporal segmentation, modified to include solar indices.
-* `scriptTrainRF.txt`: GEE file for compiling and assessing the new landcover training dataset to classify solar panel-rows in NAIP imagery. 
+* `scriptTrainRF.txt`: GEE file for compiling and assessing the new landcover training dataset to classify solar panel-rows in NAIP imagery.
+* `scriptGetLabeledImages.txt`: GEE file for preparing and exporting 4-band NAIP and a GM-SEUS panel-row burned in imagery (as a 5th band) over an array to generate labeled imagery. 
+* `script_createLabeledImages.ipynb`: Python file for taking in whole labeled images from `scriptGetLabeledImages.txt` and splitting into 256 x 256 pixel tiled images and masks. 
 * `scriptPlot_maps.ipynb`: Python file for printing and export relevant result maps.
+* `script_spatialValidation.ipynb`: Python file for initial exploration of spatial accuracy approaches.
   
 ## Dataset Description: 
-All data products are available in the Zenodo Repository. All input datasets can be downloaded from source files described in the associated paper, at the top of this document, and at the top of `script1`. All intermediate products are available upon request, and are automatically generated in the processing of the code repo. All spatial files in the final database are provided as shapefiles, geopackages, and comma separated values. 
+Files are within subdirectories **GPKG**, **SHP**, and **CSV**. All data products are available in the Zenodo Repository. All input datasets can be downloaded from source files described in the associated paper, at the top of this document, at the top of `script1`, and in the Zenodo data README. All intermediate products are available upon request, and are automatically generated in the processing of the code repo. Geospatial files in the final database are provided as shapefiles, geopackages, and comma separated values. 
 
-### The GM-SEUS open repository contains the following files
+### The GM-SEUS v1.0 data repository contains the following files
 
-* **GMSEUS_Arrays_Final.gpkg**: Final array dataset containing boundaries from existing datasets and enhanced by buffer-dissolve-erode technique with GM-SEUS panel-rows containing all array-level attributes (NAD83), geopackage and shapefile
-* **GMSEUS_Panels_Final.gpkg**: Final panel-row dataset containing boundaries from existing datasets and newly delineated GM-SEUS panel-rows containing all panel-row-level attributes (NAD83), geopackage and shapefile
-* **GMSEUS_NAIP_Arrays.gpkg**: All array boundaries created by buffer-dissolve-erode method of newly delineated (NAIP) GM-SEUS panel-rows (NAD83), geopackage and shapefile
-* **GMSEUS_NAIP_Panels.gpkg**: All newly delineated panel-row boundaries (NAD83), geopackage and shapefile
-* **GMSEUS_NAIP_PanelsNoQAQC.gpkg**: All newly delineated panel-rows from NAIP imagery without any quality control (EPSG:102003), geopackage and shapefile
-* **NAIPtrainRF.csv**: Training dataset of 12,000 NAIP training points (2,000 class–1) containing class values, spectral index values, the year of NAIP imagery accessed, and point coordinates (WGS84), comma separated values
-* **NAIPclassifyRF.csv**: Random forest classifier trees and weights, comma separated values
+* **GMSEUS_Arrays_Final**: Final array dataset containing boundaries from existing datasets and enhanced by buffer-dissolve-erode technique with GM-SEUS panel-rows containing all array-level attributes (NAD83), geopackage, shapefile, and csv
+* **GMSEUS_Panels_Final**: Final panel-row dataset containing boundaries from existing datasets and newly delineated GM-SEUS panel-rows containing all panel-row-level attributes (NAD83),  geopackage, shapefile, and csv
+* **GMSEUS_NAIP_Arrays**: All array boundaries created by buffer-dissolve-erode method of newly delineated (NAIP) GM-SEUS panel-rows (NAD83),  geopackage, shapefile, and csv
+* **GMSEUS_NAIP_Panels**: All newly delineated panel-row boundaries (NAD83), geopackage, shapefile, and csv
+* **GMSEUS_NAIP_PanelsNoQAQC**: All newly delineated panel-rows from NAIP imagery without any quality control (EPSG:102003),  geopackage, shapefile, and csv
+* **NAIPtrainRF**: Training dataset of 12,000 NAIP training points (2,000 class<sup>-2</sup>) containing class values, spectral index values, the year of NAIP imagery accessed, and point coordinates (WGS84), comma separated values
+* **NAIPclassifyRF**: Random forest classifier trees and weights as output by _classified.explain().get(‘trees’)_, comma separated values
+* **LabeledImages**: Directory containing image and mask subdirectories with 20,000 input and target images for deep learning pattern recognition applications, GeoTIFF
 
 ### We provide the following attribute fields in GM-SEUS Final Arrays
 
