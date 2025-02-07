@@ -96,10 +96,10 @@ Files are within subdirectories **GPKG**, **SHP**, and **CSV**. All data product
 
 ### The GM-SEUS v1.0 data repository contains the following files
 
-* **GMSEUS_Arrays_Final**: Final array dataset containing boundaries from existing datasets and enhanced by buffer-dissolve-erode technique with GM-SEUS panel-rows containing all array-level attributes (NAD83), geopackage, shapefile, and csv
-* **GMSEUS_Panels_Final**: Final panel-row dataset containing boundaries from existing datasets and newly delineated GM-SEUS panel-rows containing all panel-row-level attributes (NAD83),  geopackage, shapefile, and csv
-* **GMSEUS_NAIP_Arrays**: All array boundaries created by buffer-dissolve-erode method of newly delineated (NAIP) GM-SEUS panel-rows (NAD83),  geopackage, shapefile, and csv
-* **GMSEUS_NAIP_Panels**: All newly delineated panel-row boundaries (NAD83), geopackage, shapefile, and csv
+* **GMSEUS_Arrays_Final**: Final array dataset containing boundaries from existing datasets and enhanced by buffer-dissolve-erode technique with GM-SEUS panel-rows containing all array-level attributes (EPSG:102003), geopackage, shapefile, and csv
+* **GMSEUS_Panels_Final**: Final panel-row dataset containing boundaries from existing datasets and newly delineated GM-SEUS panel-rows containing all panel-row-level attributes (EPSG:102003),  geopackage, shapefile, and csv
+* **GMSEUS_NAIP_Arrays**: All array boundaries created by buffer-dissolve-erode method of newly delineated (NAIP) GM-SEUS panel-rows (EPSG:102003),  geopackage, shapefile, and csv
+* **GMSEUS_NAIP_Panels**: All newly delineated panel-row boundaries (EPSG:102003), geopackage, shapefile, and csv
 * **GMSEUS_NAIP_PanelsNoQAQC**: All newly delineated panel-rows from NAIP imagery without any quality control (EPSG:102003),  geopackage, shapefile, and csv
 * **NAIPtrainRF**: Training dataset of 12,000 NAIP training points (2,000 class<sup>-2</sup>) containing class values, spectral index values, the year of NAIP imagery accessed, and point coordinates (WGS84), comma separated values
 * **NAIPclassifyRF**: Training dataset of 12,000 NAIP training points (2,000 class–1) containing class values, spectral index values, the year of NAIP imagery accessed, and point coordinates (WGS84). Classes are solar: 0, developed: 1, vegetated: 2, water: 3, snow/ice: 4, barren/sparse vegetation: 5, comma separated values
