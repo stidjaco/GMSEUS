@@ -3,7 +3,7 @@
  </p>
 
 # A comprehensive ground-mounted solar energy dataset with sub-array design metadata in the United States
-Code epository for creating and maintaining the Ground-Mounted Solar Energy in the United States (GM-SEUS) spatiotemporal dataset of solar arrays and panel-rows using existing datasets, machine learning, and object-based image analysis to enhance existing sources. A paper in is preparation for this dataset. 
+Code repository for creating and maintaining the Ground-Mounted Solar Energy in the United States (GM-SEUS) spatiotemporal dataset of solar arrays and panel-rows using existing datasets, machine learning, and object-based image analysis to enhance existing sources. A paper in is preparation for this dataset. 
 
 ## Current Version Notes
 This is the initial release of GM-SEUS (version 1.0). All input datasets and solar panel-row delineation results are up-to-date through December 11th, 2024. 
@@ -12,7 +12,7 @@ This is the initial release of GM-SEUS (version 1.0). All input datasets and sol
 
 ## Overview
 
-Solar energy generating systems are a critical component of net-zero infrastructure, yet comprehensive datasets characterizing systems remain incomplete or not publicly available, particularly at the sub-array level. Leveraging the best freely available existing solar datasets in the US with object-based image analysis and machine learning, we present the Ground-Mounted Solar Energy in the United States (GM-SEUS) dataset, a harmonized, open access, and regularly updated geospatial and temporal repository of solar energy arrays and panel-rows. GM-SEUS v1.0 includes nearly 15,000 commercial- and utility-scale ground-mounted solar photovoltaic and concentrating solar energy arrays (186 GWDC) covering 2,900 km<sup>2</sup> and includes 2.92 million unique solar panel-rows (466 km<sup>2</sup>) within those arrays. We use these newly compiled and delineated solar panel-rows to harmonize and independently estimate several value-added attributes to existing datasets, enhancing consistency across spatiotemporal attributes. Value-added attributes include installation year, azimuth, mount technology, panel-row area and dimensions, inter-row spacing, ground cover ratio, tilt, and installed capacity. By estimating and harmonizing these spatial and temporal attributes of the distributed US solar energy landscape, GM-SEUS supports diverse applications in renewable energy modeling, ecosystem service assessment, and infrastructural planning. 
+Solar energy generating systems are a critical component of net-zero infrastructure, yet comprehensive datasets characterizing systems remain incomplete or not publicly available, particularly at the sub-array level. Leveraging the best freely available existing solar datasets in the US with object-based image analysis and machine learning, we present the Ground-Mounted Solar Energy in the United States (GM-SEUS) dataset, a harmonized, open access, and regularly updated geospatial and temporal repository of solar energy arrays and panel-rows. GM-SEUS v1.0 includes nearly 15,000 commercial- and utility-scale ground-mounted solar photovoltaic and concentrating solar energy arrays (186 GWDC) covering 2,950 km<sup>2</sup> and includes 2.92 million unique solar panel-rows (466 km<sup>2</sup>) within those arrays. We use these newly compiled and delineated solar panel-rows to harmonize and independently estimate several value-added attributes to existing datasets, enhancing consistency across spatiotemporal attributes. Value-added attributes include installation year, azimuth, mount technology, panel-row area and dimensions, inter-row spacing, ground cover ratio, tilt, and installed capacity. By estimating and harmonizing these spatial and temporal attributes of the distributed US solar energy landscape, GM-SEUS supports diverse applications in renewable energy modeling, ecosystem service assessment, and infrastructural planning. 
 
 ![alt text](images/GMSEUS_CONUS_H3.png "GM-SEUS solar array distribution")
 
@@ -25,6 +25,8 @@ We defined a solar array spatial footprint as: _adjacent, existing, and connecte
 We removed repeat geometries in order of spatial quality in relation to our deviation of an array, and georectified existing point-location sources within 190 m of existing array shapes. For points without a georectified array boundary, we manually annotated new array boundaries or rectify existing boundaries outside 190 m. Finally, rooftop solar arrays were removed by intersection with Global Google-Microsoft Open Buildings Dataset (2018). The conceptual hierarchy of system boundaries and logic behind mount classification are shown below. 
 
 ![alt text](images/SystemBoundriesAndMountClassificationLogic.png "Conceptual hierarchical system boundaries when considering solar infrastructure and solar panel-row metadata logic")
+
+The above image is the conceptual hierarchical system boundaries when considering solar infrastructure and solar panel-row metadata logic, critical for understanding this dataset and approach. Green boundaries indicate the conceptual boundary for each term. This study reports the geospatial and temporal characteristics of panel-rows and arrays. A panel-row a spatially-unique collection of one or more panel-assemblies connected by proximity and often sharing one mount, but not necessarily electrically connected. An array is composed of one or more adjacent rows of the same installation year, and the row-spacing between them. The cell, panel, assembly and project are not the system boundaries focused on in this study. The ratio of the long-edge to the short-edge is the L/W ratio. Azimuth is initially defined as the primary cardinal direction of the short-edge vector (face of the panel-row) in the minimum bounding rectangle in south facing angles given that all solar arrays were in the northern hemisphere.
 
 Existing solar panel-rows datasets were compiled from OpenStreetMap and Stid et al. (2022). To acquire panel-rows within solar array boundaries without existing panel-row information we used National Agriculture Imagery Program (NAIP) imagery and applied unsupervised object-based image segmentation and supervised machine learning approaches. We classified NAIP imagery using a Random Forest model and four spectral indices with displayed utility in classify solar energy: normalized difference photovoltaic index (NDPVI), normalized blue deviation (NBD), brightness (Br), normalized difference vegetation index (NDVI), normalized difference water index (NDWI). We trained the model using 2,000 panel-row samples from Stid et al. (2022), and 10,000 landcover validation points from Pengra et al. (2020). 
 
@@ -56,7 +58,7 @@ Spatial context was incorporated using object-based imagery analysis methods, in
 
 ## Codebase Description:
 
-All code used in the acquisition and development of this dataset is available in this [Github repository](https://github.com/stidjaco/GMSEUS). Files are ipynb or txt files, where txt files are JavaScript files intended to be run in the [GEE code editor](https://code.earthengine.google.com/). Files are named in order of operation (e.g., `script1` < `script2`).
+All code used in the acquisition and development of this dataset is available in this [Github repository](https://github.com/stidjaco/GMSEUS). Files are ipynb or js files, where js files are JavaScript files intended to be run in the [GEE code editor](https://code.earthengine.google.com/). Files are named in order of operation (e.g., `script1` < `script2`).
 
 ### The GM-SEUS open code repository contains the following files
 
@@ -64,11 +66,11 @@ General Code Files: All file require the completion of all prior files for input
 * `config.txt`: Config file containing variable constants used throughout processing.
 * `script0_getOSMdata.ipynb`: Python file for pulling and processing OSM data for each state. No required inputs.
 * `script1_prepareExistingSolarDB.ipynb`: Python file for compiling and harmonizing existing solar databases.
-* `script2_digitizeSolarLocations.txt`: GEE file for preparing manual digitization of solar array point data not able to be georectified to existing array polygon data.
+* `script2_digitizeSolarLocations.js`: GEE file for preparing manual digitization of solar array point data not able to be georectified to existing array polygon data.
 * `script3_compileGetGroundMounted.ipynb`: Python file for compiling existing and digitized boundaries, and removing rooftop mounted solar arrays. 
-* `script4_getSolarPanels.txt`: GEE file for acquiring NAIP imagery within array bounds and extracting panel-row boundaries if they exist in available imagery. 
+* `script4_getSolarPanels.js`: GEE file for acquiring NAIP imagery within array bounds and extracting panel-row boundaries if they exist in available imagery. 
 * `script5_processSolarPanels.ipynb`: Python file for compiling and quality control of solar panel-row objects. File also creates new array boundaries.
-* `script6_getInstallationYear.txt`: GEE file for applying LandTrendr temporal segmentation within array boundaries to acquire a year of change (requires `scriptLandTrendrSolarIndex.txt`).
+* `script6_getInstallationYear.js`: GEE file for applying LandTrendr temporal segmentation within array boundaries to acquire a year of change (requires `scriptLandTrendrSolarIndex.js`).
 * `script7_prepAttributes.ipynb`: Python file for preparing and harmonizing all final GM-SEUS attributes (except tilt).
 * `script8_tiltEstimation.ipynb`: Python file for using _pvlib_ to estimate the optimum tilt angle of fixed-axis (and mixed-axis) arrays.
 * `script9_prepRepository.ipynb`: Python file for preparing the final checks and exports for upload to the Zenodo Repository.
@@ -80,11 +82,11 @@ Environment Files:
 * `BigPanelTilt.yml`: Python environment for `script8` that requires pvlib integration and thus a different version of python.  
 
 Supplementary Files: 
-* `script7a_validateInstYrImagery.txt`: GEE file for manual validation of installation year using available NAIP, Sentinel-2, and Landsat 7 ETM+ imagery. 
-* `script7b_validateInstYrTimeSeries.txt`: GEE file for LandTrendr provided User-Interface (UI) file with solar PV indices included. 
-* `scriptLandTrendrSolarIndex.txt`: GEE file for LandTrendr temporal segmentation, modified to include solar indices.
-* `scriptTrainRF.txt`: GEE file for compiling and assessing the new landcover training dataset to classify solar panel-rows in NAIP imagery.
-* `scriptGetLabeledImages.txt`: GEE file for preparing and exporting 4-band NAIP and a GM-SEUS panel-row burned in imagery (as a 5th band) over an array to generate labeled imagery. 
+* `script7a_validateInstYrImagery.js`: GEE file for manual validation of installation year using available NAIP, Sentinel-2, and Landsat 7 ETM+ imagery. 
+* `script7b_validateInstYrTimeSeries.js`: GEE file for LandTrendr provided User-Interface (UI) file with solar PV indices included. 
+* `scriptLandTrendrSolarIndex.js`: GEE file for LandTrendr temporal segmentation, modified to include solar indices.
+* `scriptTrainRF.js`: GEE file for compiling and assessing the new landcover training dataset to classify solar panel-rows in NAIP imagery.
+* `scriptGetLabeledImages.js`: GEE file for preparing and exporting 4-band NAIP and a GM-SEUS panel-row burned in imagery (as a 5th band) over an array to generate labeled imagery. 
 * `script_createLabeledImages.ipynb`: Python file for taking in whole labeled images from `scriptGetLabeledImages.txt` and splitting into 256 x 256 pixel tiled images and masks. 
 * `scriptPlot_maps.ipynb`: Python file for printing and export relevant result maps.
 * `script_spatialValidation.ipynb`: Python file for initial exploration of spatial accuracy approaches.
@@ -100,8 +102,8 @@ Files are within subdirectories **GPKG**, **SHP**, and **CSV**. All data product
 * **GMSEUS_NAIP_Panels**: All newly delineated panel-row boundaries (NAD83), geopackage, shapefile, and csv
 * **GMSEUS_NAIP_PanelsNoQAQC**: All newly delineated panel-rows from NAIP imagery without any quality control (EPSG:102003),  geopackage, shapefile, and csv
 * **NAIPtrainRF**: Training dataset of 12,000 NAIP training points (2,000 class<sup>-2</sup>) containing class values, spectral index values, the year of NAIP imagery accessed, and point coordinates (WGS84), comma separated values
-* **NAIPclassifyRF**: Random forest classifier trees and weights as output by _classified.explain().get(‘trees’)_, comma separated values
-* **LabeledImages**: Directory containing image and mask subdirectories with 20,000 input and target images for deep learning pattern recognition applications, GeoTIFF
+* **NAIPclassifyRF**: Training dataset of 12,000 NAIP training points (2,000 class–1) containing class values, spectral index values, the year of NAIP imagery accessed, and point coordinates (WGS84). Classes are solar: 0, developed: 1, vegetated: 2, water: 3, snow/ice: 4, barren/sparse vegetation: 5, comma separated values
+* **LabeledImages**: Directory containing image and mask subdirectories with ~17,500 input and target images for deep learning pattern recognition applications, GeoTIFF
 
 ### We provide the following attribute fields in GM-SEUS Final Arrays
 
@@ -147,3 +149,10 @@ Files are within subdirectories **GPKG**, **SHP**, and **CSV**. All data product
 * **rowSpace**: the inter-row spacing between the panel-row and the nearest panel-row in the azimuthal direction (fixed- and single-axis) or any direction (dual-axis), meters  
 * **geometry**: top-down or perceived geometry, meters  
 * **version**: GM-SEUS version in which the panel-row geometry and attributes are derived. Each subsequent version will re-derive new geometries and the best delineation from each version will be selected, unitless  
+
+## Labeled Images for Deep Learning and Pattern Recognition
+To add value to the dataset, we generate ~17,500 labeled images intended for deep learning and pattern recognition applications. We generated labeled imagery for arrays within GM-SEUS that contained NAIP generated panel-rows (CCVPV or gmseus Source) and with at least 10 identified panel-rows. We also only allowed imagery within the array where panels were present, to reduce panel-row omission error inclusion into the image dataset. Images and masks are provided at 256x256 pixel dimensions. We allowed arrays to contain random point centered image windows equal to 50% of the panel-row containing array area divided by tiled area (e.g., 377,500 m² / 23,593 m² * 0.5 = ~8 tiles). This resulted in ~17,500 images and masks over 4,605 arrays.
+
+![alt text](images/image_mask_pairs.png "Deep learning and pattern recognition use case image product examples")
+
+Three columns of six examples containing inputs or images (left) and targets or masks (right) for fixed-, single-, and dual-axis mounted arrays contained within GM-SEUS. Note, this data was not used to create GM-SEUS, but is provided as a value added product within the data repository.
