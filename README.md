@@ -84,7 +84,7 @@ Environment Files:
 Supplementary Files: 
 * `script7a_validateInstYrImagery.js`: GEE file for manual validation of installation year using available NAIP, Sentinel-2, and Landsat 7 ETM+ imagery. 
 * `script7b_validateInstYrTimeSeries.js`: GEE file for LandTrendr provided User-Interface (UI) file with solar PV indices included. 
-* `scriptLandTrendrSolarIndex.js`: GEE file for LandTrendr temporal segmentation, modified to include solar indices.
+* `scriptLandTrendrSolarIndex.js`: GEE file for LandTrendr temporal segmentation, modified to include solar indices (see LandTrendr_LICENSE).
 * `scriptTrainRF.js`: GEE file for compiling and assessing the new landcover training dataset to classify solar panel-rows in NAIP imagery.
 * `scriptGetLabeledImages.js`: GEE file for preparing and exporting 4-band NAIP and a GM-SEUS panel-row burned in imagery (as a 5th band) over an array to generate labeled imagery. 
 * `script_createLabeledImages.ipynb`: Python file for taking in whole labeled images from `scriptGetLabeledImages.txt` and splitting into 256 x 256 pixel tiled images and masks. 
