@@ -245,7 +245,7 @@ function getIndices(image) { // Grab imagery and add bands of interest
     .addBands(image.expression('(R+B+G+NIR)/4', { 
        'R': image.select('R'),
        'G': image.select('G'),
-       'B': image.select('G'),
+       'B': image.select('B'),
        'NIR': image.select('N')}).rename('Br'))
     // Add Normalized Different Water Index (NDWI)
     .addBands(image.normalizedDifference(['G', 'N']).rename('NDWI'))
