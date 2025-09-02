@@ -3,7 +3,7 @@
  </p>
 
 # A comprehensive ground-mounted solar energy dataset with sub-array design metadata in the United States
-Code repository for creating and maintaining the Ground-Mounted Solar Energy in the United States (GM-SEUS) spatiotemporal dataset of solar arrays and panel-rows using existing datasets, machine learning, and object-based image analysis to enhance existing sources. A paper in is preparation for this dataset. 
+Code repository for creating and maintaining the Ground-Mounted Solar Energy in the United States (GM-SEUS) spatiotemporal dataset of solar arrays and panel-rows using existing datasets, machine learning, and object-based image analysis to enhance existing sources. A [peer-reviewed article](http://doi.org/10.1038/s41597-025-05862-4) describing the purpose and methods behind GM-SEUS has been accepted in Scientific Data (link not yet live)
 
 ## Current Version Notes
 This is the initial release of GM-SEUS (version 1.0). All input datasets and solar panel-row delineation results are up-to-date through December 11th, 2024. The Zenodo repository for the data can be found [here](https://doi.org/10.5281/zenodo.14827818), and for the intial code version can be found [here](https://doi.org/10.5281/zenodo.14829529).
