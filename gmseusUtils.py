@@ -5,6 +5,7 @@ import numpy as np
 import os
 import glob
 from pathlib import Path
+import warnings
 
 # Import libraries for plotting
 import matplotlib.pyplot as plt
@@ -277,6 +278,55 @@ def groupArrayByVariableAndProximity(gdf, buffer_distance, variable):
     # Drop the tempDissolveID column
     gdfOut = gdfOut.drop(columns='tempDissolveID', errors='ignore')
     return gdfOut
+
+# Function to drop self-overlapping geometries in a GeoDataFrame
+def dropSelfOverlapGDF(gdf: gpd.GeoDataFrame, unbuffer_m: float = 1.0) -> gpd.GeoDataFrame:
+    # Check for empty GeoDataFrame and projected CRS
+    if gdf.empty:
+        return gdf.copy()
+    if gdf.crs is None or gdf.crs.is_geographic:
+        raise ValueError("dropSelfOverlapGDF expects a projected CRS in meters. Reproject first (e.g., to EPSG:5070).")
+
+    # Create a copy of the gdf with a temporary ID column
+    base = gdf.copy()
+    base["tempID"] = range(len(base))
+
+    # Unbuffer by 1 m (or set unbuffer_m). Fix invalids first to avoid buffer errors.
+    tmp = base[["tempID", "geometry"]].copy()
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        tmp["geometry"] = tmp.geometry.buffer(0)                    # light make-valid
+        tmp["geometry"] = tmp.geometry.buffer(-abs(unbuffer_m))     # negative buffer
+
+    # Drop empties produced by the unbuffer step
+    tmp = tmp[tmp.geometry.notnull() & ~tmp.geometry.is_empty].copy()
+    # Check if the temporary GeoDataFrame is empty
+    if tmp.empty:
+        # Nothing to collide with after unbuffer → keep everything
+        out = base.drop(columns=["tempID"]).reset_index(drop=True)
+        return out
+
+    # Self spatial join on unbuffered shapes
+    hits = gpd.sjoin(
+        tmp, tmp[["tempID", "geometry"]],
+        how="left", predicate="intersects",
+        lsuffix="l", rsuffix="r"
+    )
+
+    # Only care about *other* shapes, not self
+    hits = hits[hits["tempID_l"] != hits["tempID_r"]].copy()
+    if hits.empty:
+        out = base.drop(columns=["tempID"]).reset_index(drop=True)
+        return out
+
+    # Mark rows that intersect ANY earlier (smaller tempID) row → those should be dropped
+    hits["has_prior"] = hits["tempID_r"] < hits["tempID_l"]
+    to_drop_ids = set(hits.groupby("tempID_l")["has_prior"].any().pipe(lambda s: s[s].index))
+    
+    # Return the original gdf minus the to-drop rows
+    out = base[~base["tempID"].isin(to_drop_ids)].copy()
+    out = out.drop(columns=["tempID"]).reset_index(drop=True)
+    return out
 
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ GM-SEUS Plotting Functions
 
