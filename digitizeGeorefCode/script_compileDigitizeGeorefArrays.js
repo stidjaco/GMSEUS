@@ -7,14 +7,27 @@
 /*
 -- Information --
 Author: Jacob Stid & Aster Ellsworth
-Date Created: 07-18-2024
-Date Updated: 10-03-2025
+Date Created: 09-11-2025
+Date Updated: 09-29-2025
 Contact: stidjaco@msu.edu (Jacob Stid)
- 
+
+
 -- Notes --
-This is a script to manually georeference and digitize solar energy arrays (panels and space between them) for array point data with missing 
-information. This script requires the points_toDigitize.shp and existingDatasetArrayShapes output from script1 of the GM-SEUS codebase. 
+This script compiles and exports all newly digtized and georeferenced boundaries and metadata from points without spatial data in GM-SEUS v1.0. 
+Point data was either: (1) georeferenced with a point-connector (line) between existing polygon and point objects, (2) georeferenced with a 
+point-connector between a point object and a new array shape (polygon), (3) newly discovered and digizied with no existing metadata, or (4) 
+georeferenced with a point-connector (line) between existing or newly digitized objects and newly created point objects. 
+
+Digitization and georeferencing occur in *digitizeSolarArrays_v2_X*, where X is the script iteration to avoid memory overload issues. We will
+export new boundaries and point-connectors togther for georeferencing future GM-SEUS versions (misaligned points will still be present in
+import datasets), as well as just georeferenced and digitized array boundaries (no connections) with copied metadata. 
+
+Asset definitions are: 
+* digGeoref: Contains newly digitized and georeferenced array boundaries AND point-connectors for solar arrays without spatial boundaries in GM-SEUS v1.0. 
+* newArrays: Contains newly digitized array boundaries that were discovered during the digitization process and with no metadata. 
+* dupPolys: Contains newly created point objects with point metadata copied from existing point sources to avoid overlap between point spatial location. 
 */
+
  
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ Variables and imagery prep
@@ -35,1249 +48,234 @@ var allPointsID = 'projects/ee-stidjaco/assets/BigPanel/points_all';
 
 // Call all digitized and georeferenced arrays from prior script iterations
 var newDigGeoRef_v2_asset0 = 'projects/ee-asterellsworth/assets/newDigGeoRef_v2_asset_0';
-var newArrays_v2_asset0 = 'projects/ee-asterellsworth/assets/newArrays_v2_asset_0';
 var newDigGeoRef_v2_asset1 = 'projects/ee-asterellsworth/assets/newDigGeoRef_v2_asset_1';
+var newDigGeoRef_v2_asset2 = 'projects/ee-asterellsworth/assets/newDigGeoRef_v2_asset_2';
+var newDigGeoRef_v2_assetInSPIRE = 'projects/ee-asterellsworth/assets/newDigGeoRef_v2_asset_inspire';
+var newArrays_v2_asset0 = 'projects/ee-asterellsworth/assets/newArrays_v2_asset_0';
 var newArrays_v2_asset1 = 'projects/ee-asterellsworth/assets/newArrays_v2_asset_1';
+var newArrays_v2_asset2 = 'projects/ee-asterellsworth/assets/newArrays_v2_asset_2';
 var dupPolys_v2_asset1 = 'projects/ee-asterellsworth/assets/duplicatePolys_v2_asset_1'; 
+var dupPolys_v2_asset2 = 'projects/ee-asterellsworth/assets/duplicatePolys_v2_asset_2'; 
+
+// Get states for breaking up export
+var States = ee.FeatureCollection("TIGER/2018/States"); 
 
 // Set date
-var date = '050525';
+var date = '093025';
+
+// Set GM-SEUS version
+var version = 'v1_1'
+
+// Set asset folder for final export
+var assetFolder = 'BigPanel/digGeoref_v1_1'
 
 // Always set a seed
 var seed = 15;
 
-//##############################################\\
-// Imagery Preparation and Cloud Mask Functions \\
-//##############################################\\
+// Set geometry error margin and line buffer distance
+var geomErrorMargin = ee.Number(1); 
+var lineBuffer = ee.Number(0.1);
+
+// Define grid and grid cell tagto fractionate export into
+var grid = States; 
+var gridCellIDtag = 'STUSPS'; 
+
+// Required attributes to check existing sources for
+var attList = [
+  {name: 'AVtype',   type: 'String'},
+  //{name: 'Source',   type: 'String'},
+  {name: 'area',     type: 'Float'},
+  {name: 'azimuth',  type: 'Float'},
+  {name: 'cap_mw',   type: 'Float'},
+  {name: 'instYr',   type: 'Long'},
+  {name: 'modType',  type: 'String'},
+  {name: 'mount',    type: 'String'},
+  {name: 'nativeID', type: 'String'}
+];
+
+// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ Helper Functions
+// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+// Function to check for valid geometries (as polygons/multipolygons) in a feature or featureCollection
+var validateGeometries = function(feature){
+  // Extract and keep only Polygons
+  var featurePolygon = feature.geometry().geometries().map(function(geom){
+    var g = ee.Geometry(geom);
+    return ee.Algorithms.If(g.type().compareTo('Polygon').eq(0), g, null);}, true); // true drops nulls
+  
+  // Filter shapes by area to remove artifacts of GEE geom operations (improbable value)
+  var shpAreaThresh = 1; // m2
+  var featurePolyFiltered = ee.List(featurePolygon).map(function(geom){
+    var g = ee.Geometry(geom);
+    return ee.Algorithms.If(g.area(ee.ErrorMargin(1)).gt(shpAreaThresh),g,null);}, true); // drop nulls
+
+  // Set geometry to MultiPolygon or Polygon based on the content
+  var newGeometry = ee.Geometry(ee.Algorithms.If(
+    ee.Algorithms.IsEqual(featurePolyFiltered.size(), 1), // Check if the original geometry is a single polygon
+    ee.Geometry(ee.List(featurePolyFiltered).get(0)), // If single polygon, return it directly
+    ee.Geometry.MultiPolygon(featurePolyFiltered) // Otherwise, return as MultiPolygon
+  ));
+  
+  // Return a new feature with valid geometries
+  var newFeature = feature.setGeometry(newGeometry);
+  return ee.Feature(newFeature);
+};
+
+// Functiont to copy attributes from a feature collection to another by intersection, checking for NA's 
+var copyAttributes = function(fcFrom, fcTo, attList){
+  //#################################\\
+  // Internal attribute helper funcs \\
+  //#################################\\
+  // Target feature needs value if prop missing OR NA
+  var needsValue = function(f, name, type) {
+    var hasProp = f.propertyNames().contains(name);
+    return ee.Algorithms.If(
+      hasProp,
+      (type === 'String')
+        ? ee.String(f.get(name)).length().eq(0)   // empty string
+        : ee.Number(f.get(name)).eq(-9999),       // -9999
+      true // doesn’t exist at all
+    );
+  };
+  
+  // Source is valid if exists AND not NA (source being the source feature/attribute)
+  var sourceValid = function(src, name, type) {
+    var hasProp = src.propertyNames().contains(name);
+    return ee.Algorithms.If(
+      hasProp,
+      (type === 'String')
+        ? ee.String(src.get(name)).length().gt(0)
+        : ee.Number(src.get(name)).neq(-9999),
+      false
+    );
+  };
+  
+  // Conditionally set from source
+  var setFromSourceIfNeeded = function(accF, srcF, name, type) {
+    var need = ee.Algorithms.If(needsValue(accF, name, type), 1, 0);
+    var valid = ee.Algorithms.If(sourceValid(srcF, name, type), 1, 0);
+    var doSet = ee.Number(need).multiply(ee.Number(valid)).eq(1);
+    return ee.Feature(ee.Algorithms.If(
+      doSet,
+      accF.set(name, srcF.get(name)),
+      accF
+    ));
+  };
+  
+  // After merge: ensure every att exists; if missing, fill with NA
+  var setMissingToNA = function(f, name, type) {
+    var hasProp = f.propertyNames().contains(name);
+    return ee.Feature(ee.Algorithms.If(
+      hasProp,
+      f, // already present; leave as-is (even if NA)
+      f.set(name, (type === 'String') ? '' : -9999)
+    ));
+  };
+  
+  //#####################################\\
+  // Apply functions and copy attributes \\
+  //#####################################\\
+  var fcOut = ee.FeatureCollection(fcTo.map(function(targetF) {
+    // Overlapping sources
+    var hits = fcFrom.filter(ee.Filter.intersects('.geo', targetF.geometry()));
+
+    // Merge values from overlaps (first non-NA wins)
+    var merged = ee.Feature(hits.iterate(function(srcF, acc) {
+      acc = ee.Feature(acc);
+      srcF = ee.Feature(srcF);
+      attList.forEach(function(att){
+        acc = setFromSourceIfNeeded(acc, srcF, att.name, att.type);
+      });
+      return acc;
+    }, targetF));
+
+    // Post-pass: guarantee all columns exist; fill missing with NA
+    attList.forEach(function(att){
+      merged = setMissingToNA(merged, att.name, att.type);
+    });
+
+    return ee.Feature(merged);
+  }));
+  
+  return fcOut;
+};
+
+// Function to minor-buffor and union all objects in a fc, and return exploded resulting objects
+var createUnionFC = function(fc){
+ return ee.FeatureCollection(
+  fc.geometry(geomErrorMargin).buffer(lineBuffer) // Small buffer to create intersecting polygons from connecting lines
+  .geometries().map(function(geom) {
+    return ee.Feature(ee.Geometry(geom));  // Wrap each geometry into a Feature
+  })); 
+};
+
+//#####################################\\
+// Data Call, Preparation, and Merging \\
+//#####################################\\
 
 // Get featureCollections 
 var arraysToDigitize = ee.FeatureCollection(toDigitizeID); // Call the digitizing dataset
-var arraysToDigitize = arraysToDigitize.filter(ee.Filter.neq("Source", "InSPIRE"));
 var existingArrays = ee.FeatureCollection(existingArraysID); // Call the existing dataset
 
 // Get digitized and georeferenced arrays from previous script iterations
 var digGeoref_0 = ee.FeatureCollection(newDigGeoRef_v2_asset0);
-var newArrays_0 = ee.FeatureCollection(newArrays_v2_asset0);
 var digGeoref_1 = ee.FeatureCollection(newDigGeoRef_v2_asset1);
+var digGeoref_2 = ee.FeatureCollection(newDigGeoRef_v2_asset2);
+var digGeoref_InSPIRE = ee.FeatureCollection(newDigGeoRef_v2_assetInSPIRE);
+var newArrays_0 = ee.FeatureCollection(newArrays_v2_asset0);
 var newArrays_1 = ee.FeatureCollection(newArrays_v2_asset1);
+var newArrays_2 = ee.FeatureCollection(newArrays_v2_asset2);
 var dupPolys_1 = ee.FeatureCollection(dupPolys_v2_asset1);
+var dupPolys_2 = ee.FeatureCollection(dupPolys_v2_asset2);
 
 // Bring together digGeoref, newArrays, and dupPolys to map
-var digGeoref = digGeoref_0.merge(digGeoref_1);
-var newArrays = newArrays_0.merge(newArrays_1);
-var dupPolys = dupPolys_1;
-
-// Get imageCollections
-var NAIP = ee.ImageCollection('USDA/NAIP/DOQQ');
-var LS = ee.ImageCollection('LANDSAT/LC09/C02/T1_L2');
-var S2 = ee.ImageCollection("COPERNICUS/S2_SR_HARMONIZED");
-
-// Call the all points dataset
-var allPoints = ee.FeatureCollection(allPointsID);
-var allPoints = allPoints.filter(ee.Filter.neq("Source", "InSPIRE")); // For v1.0, we are only digitizing InSPIRE arrays as proof of concept. 
-
-// Set variables for NAIP and satellite dates. Update these as necessary (e.g., once 2024 NAIP starts being uploaded)
-var NAIPstart = '2019'; // really this is 2021, but there is a single array in the dataset where the most recent imagery is 2019 
-var NAIPend = '2023'; // Set most recent NAIP year range (two years since NAIP is acquired at state level every two years)
-var SATstart = '2024';
-var SATend = '2024';
-
-// Function to get the most recent image per location without reprojection
-function getMostRecentImageNAIP(collection) {
-  // Get band names
-  var bandNames = collection.first().bandNames();
-  // Get NAIP id's. These are in the form: 'm_2909522_se_15_060_20201130'
-  var longIDs = collection.aggregate_array('system:index').distinct();
-  // For each id in uniqueIDs, drop the last 9 characters "_20201130"
-  var uniqueIDs = longIDs.map(function(id){return ee.String(id).slice(0, 16);});
-  // Within each non-dated index, get the most recent image
-  var recentImages = uniqueIDs.map(function(id) {
-    var imgs = collection.filter(ee.Filter.stringContains('system:index', id));
-    var img = imgs.limit(1, 'system:time_start', false).first();  // Limit to first image when sorted by date // .sort('system:time_start', false) // Sort descending to get the most recent
-    return ee.Image(img.copyProperties(imgs.first(), imgs.first().propertyNames()));
-  });
-  // Ensure the imageCollection is not null, handle the case where no image is found (set an empty image)
-  var imgRecent = ee.Image(ee.Algorithms.If(
-    recentImages.size().gt(0),
-    ee.ImageCollection(recentImages).select(bandNames).median(), // select for desired bandnames and get median (output: Image)
-    ee.Image([]))); // (output: Image)
-  // // Get projection info
-  // var origProj = imgColRecent.first().projection().getInfo(); // NAIP.filterBounds(aoi).limit(1, 'system:time_start', false).first().projection().atScale(scale).getInfo()
-  // var origCRS = origProj.crs; var origTransform = origProj.transform;
-  // Return a non-mosaiced image that retains native resolution (mosaicing reduces resolution and reprojects to WGS84)
-  return imgRecent; //.set({origCRS: origCRS, origTransform: origTransform}); 
-}
-
-// Cloud masking functions sentinel
-function maskS2clouds(image) {
-  var qa = image.select('QA60');
-  // Bits 10 and 11 are clouds and cirrus, respectively.
-  var cloudBitMask = 1 << 10;
-  var cirrusBitMask = 1 << 11;
-  // Both flags should be set to zero, indicating clear conditions.
-  var mask = qa.bitwiseAnd(cloudBitMask).eq(0)
-      .and(qa.bitwiseAnd(cirrusBitMask).eq(0));
-  return image.updateMask(mask).divide(10000);}
-  
-// Cloud and Shadow masking landsat
-function LSfmask(img) {
-  var cloudShadowBitMask = 1 << 3;
-  var cloudsBitMask = 1 << 5;
-  var qa = img.select('QA_PIXEL');
-  var mask = qa.bitwiseAnd(cloudShadowBitMask)
-                 .eq(0)
-                 .and(qa.bitwiseAnd(cloudsBitMask).eq(0));
-  return img.updateMask(mask);
-}
-  
-// Applies scaling factors.
-function applyLS_ScaleFactors(image) {
-  var opticalBands = image.select('SR_B.').multiply(0.0000275).add(-0.2);
-  var thermalBands = image.select('ST_B.*').multiply(0.00341802).add(149.0);
-  return image.addBands(opticalBands, null, true)
-              .addBands(thermalBands, null, true);
-}
+var digGeoref = digGeoref_0.merge(digGeoref_1).merge(digGeoref_2).merge(digGeoref_InSPIRE); // print(digGeoref.size());
+var newArrays = newArrays_0.merge(newArrays_1).merge(newArrays_2); // print(newArrays.size());
+var dupPolys = dupPolys_1.merge(dupPolys_2); // print(dupPolys.size());
 
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ PART 1
+// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ Report Numbers and Export
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-///*
-//##################################################\\
-// Get toDigitize arrays without digitized boundary \\
-//##################################################\\
+//####################################\\
+//  Report numbers for digitization   \\
+//####################################\\
+/*
+// Get new array area in newly digitized and georeferenced arrays (digGeoref) and not in existing sources, in km2
+var nonIntersectingArrays = digGeoref.filter(ee.Filter.intersects('.geo', existingArrays.geometry(geomErrorMargin)).not()); print()
+var nonIntersectingArea = nonIntersectingArrays.geometry(geomErrorMargin).area(geomErrorMargin).round().divide(1e6); print("New array area (existing point): ", nonIntersectingArea, 'km2');
 
-//This is an iterative process, each time the script is run, the first missing boundary is displayed. 
-//This ensures that all arrays are either digitized, or removed due to a lack of imagery. If array is 
-//present in imagery, digitize array boundary (panels + spacing) following Fujita et al. (2023) logic. 
-//If no panels are present, add nativeID to noPanelsPresent list. To start from scratch, create empty 
-//lists
+// Get new array area in newly discovered and digitized arrays (newArrays) and not in existing sources, in km2
+var nonIntersectingDiscoveredArrays = newArrays.filter(ee.Filter.intersects('.geo', existingArrays.geometry(1)).not());
+var nonIntersectingDiscoveredArea = nonIntersectingDiscoveredArrays.geometry(geomErrorMargin).area(geomErrorMargin).round().divide(1e6); print("New array area (discovered): ", nonIntersectingDiscoveredArea, 'km2');
 
-// Set list of nativeID's where array was digitized. Take notes for each.
-var digitizedIDs = [
-  {Source: "GPPDB", nativeID: "Robert O Schulz Solar Farm"}, 
-  {Source: "GPPDB", nativeID: "Roadrunner Solar"}, 
-  {Source: "GPPDB", nativeID: "Atwell Island"}, 
-  {Source: "GPPDB", nativeID: "Solar Borrego I"}, 
-  {Source: "GPPDB", nativeID: "Butler Solar Power Project"}, 
-  {Source: "GPPDB", nativeID: "Gila Bend Hybrid"},
-  {Source: "GPPDB", nativeID: "Deer Creek PV"}, 
-  {Source: "GPPDB", nativeID: "Fort Benning Solar Facility"}, 
-  {Source: "GPPDB", nativeID: "Granite Mountain Solar West  LLC"}, 
-  {Source: "GPPDB", nativeID: "Pavant Solar  LLC"}, 
-  {Source: "GPPDB", nativeID: "Pavant Solar II LLC"}, 
-  {Source: "GPPDB", nativeID: "Sandstone Solar"}, 
-  {Source: "GPPDB", nativeID: "Sheridan School Corporation Solar"}, 
-  {Source: "GPPDB", nativeID: "Babcock Solar Energy Center Hybrid"}, 
-  {Source: "GPPDB", nativeID: "Boulder Solar Power  LLC"}, 
-  {Source: "GPPDB", nativeID: "CA Flats Solar 130  LLC"}, 
-  {Source: "GPPDB", nativeID: "Farley Road Community Solar"}, 
-  {Source: "GPPDB", nativeID: "Golden Hills Solar"}, 
-  {Source: "GPPDB", nativeID: "Grand View Solar Two"}, 
-  {Source: "GPPDB", nativeID: "Kings Bay Solar Facility"}, 
-  {Source: "GPPDB", nativeID: "Peterson Road Solar"}, 
-  {Source: "GPPDB", nativeID: "San Isabel Solar  LLC"}, 
-  {Source: "GPPDB", nativeID: "Wilson Solar Farm 1"}, 
-  {Source: "GPPDB", nativeID: "Belchertown Renewables Community Solar"}, 
-  {Source: "GPPDB", nativeID: "Delta Solar Power I"}, 
-  {Source: "GPPDB", nativeID: "Gray Hawk Solar"}, 
-  {Source: "GPPDB", nativeID: "Midway Solar Farm 1"}, 
-  {Source: "GPPDB", nativeID: "Moffett Solar Project"}, 
-  {Source: "GPPDB", nativeID: "Aulander Holloman Solar  LLC"},  
-  {Source: "GPPDB", nativeID: "Bloomfield Municipal Utilities Solar"}, 
-  {Source: "GPPDB", nativeID: "Bonnie Mine Solar"}, 
-  {Source: "GPPDB", nativeID: "CA Flats Solar 150  LLC"},  
-  {Source: "GPPDB", nativeID: "Gloucester Solar"}, 
-  {Source: "GPPDB", nativeID: "Grange Hall Solar"},  
-  {Source: "GPPDB", nativeID: "Interstate Solar Energy Center"}, 
-  {Source: "GPPDB", nativeID: "Sunshine Gateway Solar Energy Center"}, 
-  {Source: "GPPDB", nativeID: "West of the Pecos Solar"}, 
-  {Source: "GPPDB", nativeID: "Sacramento Fairbain Water Treatment Plant"}, 
-  {Source: "GPPDB", nativeID: "USS Brude Solar CSG"},  
-  {Source: "GPPDB", nativeID: "USS East Hauer Watt CSG"}, 
-  {Source: "GPPDB", nativeID: "Ashby Duffy CSG Solar Farm"}, 
-  {Source: "GPPDB", nativeID: "Catawba Solar LLC"}, 
-  {Source: "GPPDB", nativeID: "Sampson Road Community Solar"}, 
-  {Source: "GPPDB", nativeID: "Bluewater CDEC 1"}, 
-  {Source: "GPPDB", nativeID: "Tulare 1 and 2"}, 
-  {Source: "GPPDB", nativeID: "DG Crystal Spring CSG"}, 
-  {Source: "GPPDB", nativeID: "Bethel Solar"}, 
-  {Source: "GPPDB", nativeID: "ZV Solar 1"}, 
-  {Source: "GPPDB", nativeID: "Strider Solar  LLC"}, 
-  {Source: "GPPDB", nativeID: "Bryan Solar  LLC"}, 
-  {Source: "GPPDB", nativeID: "Garrett Solar"}, 
-  {Source: "GPPDB", nativeID: "Stroud Solar Station"}, 
-  {Source: "GPPDB", nativeID: "Huron Solar Station"},
-  {Source: "GPPDB", nativeID: "Pasquotank"},
-  {Source: "GPPDB", nativeID: "RE Old River One  LLC"},
-  {Source: "GPPDB", nativeID: "Shafter Solar LLC"},
-  {Source: "GPPDB", nativeID: "Frontier Solar LLC"},
-  {Source: "GPPDB", nativeID: "Kelford"},
-  {Source: "GPPDB", nativeID: "Maricopa West Solar PV  LLC"},
-  {Source: "GPPDB", nativeID: "Nicolis Solar PV Plant"},
-  {Source: "GPPDB", nativeID: "Giffen Solar Park"},
-  {Source: "GPPDB", nativeID: "Mt. Home Solar 1  LLC"},
-  {Source: "GPPDB", nativeID: "Rio Bravo Solar 1 LLC"},
-  {Source: "GPPDB", nativeID: "Simcoe Solar"},
-  {Source: "GPPDB", nativeID: "Fusion Solar Center LLC"},
-  {Source: "LBNLUSS", nativeID: "Paradise Solar Energy Center"},
-  {Source: "LBNLUSS", nativeID: "Colorado Springs Air Force Academy"},
-  {Source: "LBNLUSS", nativeID: "SPS - Hopi"},
-  {Source: "LBNLUSS", nativeID: "SPS - Monument"},
-  {Source: "LBNLUSS", nativeID: "McGraw-Hill Solar Farm"},
-  {Source: "LBNLUSS", nativeID: "Cotton Center"},
-  {Source: "LBNLUSS", nativeID: "SMUD - Bruceville (at Grundman) (NOT RE Bruceville)"},
-  {Source: "LBNLUSS", nativeID: "Herbert Farm Solar (SMECO)"},
-  {Source: "LBNLUSS", nativeID: "SPI Palm Springs Solar (North Palm Springs 1A, 4A)"},
-  {Source: "LBNLUSS", nativeID: "Black Mountain Solar Project"},
-  {Source: "LBNLUSS", nativeID: "El Chaparral (SunE EPE 1)"},
-  {Source: "LBNLUSS", nativeID: "PSEG Milford Solar Farm"},
-  {Source: "LBNLUSS", nativeID: "Mount St. Mary's University Solar Farm"},
-  {Source: "LBNLUSS", nativeID: "Maryland Solar Farm"},
-  {Source: "LBNLUSS", nativeID: "Tularosa Solar Energy Center (Otero County Solar Energy Center)"},
-  {Source: "LBNLUSS", nativeID: "Mercer County Community College Solar"},
-  {Source: "LBNLUSS", nativeID: "Manzano Solar Energy Center"},
-  {Source: "LBNLUSS", nativeID: "Berry Plastics Solar Plant"},
-  {Source: "LBNLUSS", nativeID: "RE Kansas South"},
-  {Source: "LBNLUSS", nativeID: "TA-High Desert (Antelope Project)"},
-  {Source: "LBNLUSS", nativeID: "West Pemberton Solar Facility"},
-  {Source: "LBNLUSS", nativeID: "Cibola Solar Energy Center"},
-  {Source: "LBNLUSS", nativeID: "Cascade Solar"},
-  {Source: "LBNLUSS", nativeID: "SR Simon Solar Farm"},
-  {Source: "LBNLUSS", nativeID: "Genesis Solar Energy Project"},
-  {Source: "LBNLUSS", nativeID: "McDonald Solar Farm"},
-  {Source: "LBNLUSS", nativeID: "PSEG Kinsley Landfill Solar"},
-  {Source: "LBNLUSS", nativeID: "IND Airport Solar Farm Phase 2 (INDY II + III)"},
-  {Source: "LBNLUSS", nativeID: "(City of) Phoenix (Desert Star) (Landfill SR85)"},
-  {Source: "LBNLUSS", nativeID: "Beaufort Solar"},
-  {Source: "LBNLUSS", nativeID: "Alamo Solar Project"},
-  {Source: "LBNLUSS", nativeID: "Morgans Corner Solar"},
-  {Source: "LBNLUSS", nativeID: "Montgomery Solar"},
-  {Source: "LBNLUSS", nativeID: "Coronal Lost Hills"},
-  {Source: "LBNLUSS", nativeID: "Fayetteville Solar (formerly E I DuPont de Nemours )"},
-  {Source: "LBNLUSS", nativeID: "Eden Solar (formerly Derby, Innovative Solar 34)"},
-  {Source: "LBNLUSS", nativeID: "Sullivan Solar"},
-  {Source: "LBNLUSS", nativeID: "Kokomo Solar Park (Kokomo Solar 1)"},
-  {Source: "LBNLUSS", nativeID: "Cedar Branch Solar Project (Buena Vista)"},
-  {Source: "LBNLUSS", nativeID: "Grove Solar Center"},
-  {Source: "LBNLUSS", nativeID: "Church Hill Solar Farm"},
-  {Source: "LBNLUSS", nativeID: "Snow Camp Solar"},
-  {Source: "LBNLUSS", nativeID: "PSEG ILR Landfill Solar"},
-  {Source: "LBNLUSS", nativeID: "Florence Solar"},
-  {Source: "LBNLUSS", nativeID: "SR Selmer II (Selmer North)"},
-  {Source: "LBNLUSS", nativeID: "Delilah Road Landfill (KDC Solar RTC LLC or Seashore Solar)"},
-  {Source: "LBNLUSS", nativeID: "Pearblossom Solar Project (Solar Star California, XLIV)"},
-  {Source: "LBNLUSS", nativeID: "E W Brown Solar Facility"},
-  {Source: "LBNLUSS", nativeID: "Vale Air Solar Center"},
-  {Source: "LBNLUSS", nativeID: "Mohave Electric At Fort Mohave AZ (Mohave Electric Cooperative at Joy Lane)"},
-  {Source: "LBNLUSS", nativeID: "Summer Solar of Lancaster (Summer Solar SCPPA)"},
-  {Source: "LBNLUSS", nativeID: "Old Midville Solar Project"},
-  {Source: "LBNLUSS", nativeID: "Stanford Solar Generating Station (Solar Star California  XLI  ,Rosamond West Solar Project I)"},
-  {Source: "LBNLUSS", nativeID: "Enterprise Solar Plant (Four Brothers)"},
-  {Source: "LBNLUSS", nativeID: "IMPA Anderson 1 Solar Project"},
-  {Source: "LBNLUSS", nativeID: "Cyril"},
-  {Source: "LBNLUSS", nativeID: "Bakersfield PV 1"},
-  {Source: "LBNLUSS", nativeID: "Marlin Solar"},
-  {Source: "LBNLUSS", nativeID: "Clipperton Holdings"},
-  {Source: "LBNLUSS", nativeID: "Highway 56 Solar (not the West Moore Sherman project coming in 2018)"},
-  {Source: "LBNLUSS", nativeID: "Aurora Eastwood Solar"},
-  {Source: "LBNLUSS", nativeID: "Aurora West Faribault Solar"},
-  {Source: "LBNLUSS", nativeID: "Monroe County Sites C, D, & E"},
-  {Source: "LBNLUSS", nativeID: "SCDA Solar 1 (Sacramento Airport PV) has North and East site"},
-  {Source: "LBNLUSS", nativeID: "Aurora Lake Pulaski Solar"},
-  {Source: "LBNLUSS", nativeID: "Haley Solar"},
-  {Source: "LBNLUSS", nativeID: "Suwannee Solar Energy Facility"},
-  {Source: "LBNLUSS", nativeID: "Tumbleweed Solar (Ventyx: Jeans Solar Park)"},
-  {Source: "LBNLUSS", nativeID: "SKIC 2 (South Kern Industrial Center, Algonquin SKIC 10 Solar, Bakersfield 2)"},
-  {Source: "LBNLUSS", nativeID: "Jackson Solar Farm (Wilson)"},
-  {Source: "LBNLUSS", nativeID: "Whitewright Solar"},
-  {Source: "LBNLUSS", nativeID: "Facebook 1 Solar Energy Center (Los Lunas 1)"},
-  {Source: "LBNLUSS", nativeID: "Marin Clean Energy Solar One (Richmond Solar Project)"},
-  {Source: "LBNLUSS", nativeID: "Portal Ridge Solar C"},
-  {Source: "LBNLUSS", nativeID: "PSEG Sunflower Solar"},
-  {Source: "LBNLUSS", nativeID: "Ayrshire"},
-  {Source: "LBNLUSS", nativeID: "Estill Solar I"},
-  {Source: "LBNLUSS", nativeID: "Lapeer Solar Project I (Demille Array)"},
-  {Source: "LBNLUSS", nativeID: "Shoe Creek Solar"},
-  {Source: "LBNLUSS", nativeID: "Amazon Solar Farm US East 6 (Southampton Solar )"},
-  {Source: "LBNLUSS", nativeID: "Woodleaf Solar Facility"},
-  {Source: "LBNLUSS", nativeID: "OR Solar 5 (Merrill Solar Facility)"},
-  {Source: "LBNLUSS", nativeID: "Raritan Solar Project"},
-  {Source: "LBNLUSS", nativeID: "Wy'East Solar"},
-  {Source: "LBNLUSS", nativeID: "Adams Solar Center"},
-  {Source: "LBNLUSS", nativeID: "Covington Solar Farm"},
-  {Source: "LBNLUSS", nativeID: "Sterling Solar (TX)"},
-  {Source: "LBNLUSS", nativeID: "Eddy Solar II"},
-  {Source: "LBNLUSS", nativeID: "DSM Nutritional Products Solar"},
-  {Source: "LBNLUSS", nativeID: "Adams Nielson Solar"},
-  {Source: "LBNLUSS", nativeID: "Coolidge Solar 1 (Coolidge Solar Ranger)"},
-  {Source: "LBNLUSS", nativeID: "RE Gaskell West 1"},
-  {Source: "LBNLUSS", nativeID: "Southwick Solar PV"},
-  {Source: "LBNLUSS", nativeID: "Synergen Panorama CSG aka Panorama Solar Electric Facility"},
-  {Source: "LBNLUSS", nativeID: "Commerce Solar"},
-  {Source: "LBNLUSS", nativeID: "Happy Hollow CSG Hybrid"},
-  {Source: "LBNLUSS", nativeID: "Westside Wastewater Treatment Plant Hybrid"},
-  {Source: "LBNLUSS", nativeID: "RT 52 Walden Solar 1 Hybrid"},
-  {Source: "LBNLUSS", nativeID: "Imeson Solar (SunPort Solar)"},
-  {Source: "LBNLUSS", nativeID: "Tipton Solar Park"},
-  {Source: "LBNLUSS", nativeID: "Newfield Community Solar"},
-  {Source: "LBNLUSS", nativeID: "City of Pratt Solar (Pratt Solar Farm)"},
-  {Source: "LBNLUSS", nativeID: "Centinela State Prison"},
-  {Source: "LBNLUSS", nativeID: "Calipatria State Prison"},
-  {Source: "LBNLUSS", nativeID: "DG AMP Wadsworth 1048"},
-  {Source: "LBNLUSS", nativeID: "Lampwick"},
-  {Source: "LBNLUSS", nativeID: "IMPA Crawfordsville 2 Solar Park"},
-  {Source: "LBNLUSS", nativeID: "Cascade Solar (TX)"},
-  {Source: "LBNLUSS", nativeID: "Rankin Solar Center"},
-  {Source: "LBNLUSS", nativeID: "Cinnaminson Landfill Solar"},
-  {Source: "LBNLUSS", nativeID: "Pennsauken Brownfield Solar"},
-  {Source: "LBNLUSS", nativeID: "Two Mile Desert Project aka Hertford Solar"},
-  {Source: "LBNLUSS", nativeID: "Riverhead Solar Farm"},
-  {Source: "LBNLUSS", nativeID: "DWW Solar ll (aka Tobacco Valley Solar)"},
-  {Source: "LBNLUSS", nativeID: "Sunshine Valley Solar"},
-  {Source: "LBNLUSS", nativeID: "Valentine Solar"},
-  {Source: "LBNLUSS", nativeID: "Finchville Solar Hybrid CSG"},
-  {Source: "LBNLUSS", nativeID: "Lansing Renewables, LLC"},
-  {Source: "LBNLUSS", nativeID: "Chickasaw Nation Solar Farm"},
-  {Source: "LBNLUSS", nativeID: "Breckenridge Solar"},
-  {Source: "LBNLUSS", nativeID: "Blue Star (Part of Phoenix Solar Portfolio)"},
-  {Source: "LBNLUSS", nativeID: "Hopkins Hill CSG"},
-  {Source: "LBNLUSS", nativeID: "Blackville Solar Farm, LLC"},
-  {Source: "LBNLUSS", nativeID: "Lakehurst Solar"},
-  {Source: "LBNLUSS", nativeID: "Riley"},
-  {Source: "LBNLUSS", nativeID: "Monroe Solar Farm (Hoffman Station Road Solar)"},
-  {Source: "LBNLUSS", nativeID: "Wildflower Solar 1"},
-  {Source: "LBNLUSS", nativeID: "Myrtle Solar"},
-  {Source: "LBNLUSS", nativeID: "Grandy PV 1"},
-  {Source: "LBNLUSS", nativeID: "New Orleans Solar Station"},
-  {Source: "LBNLUSS", nativeID: "Centerfield Cooper Solar, LLC"},
-  {Source: "LBNLUSS", nativeID: "Milford Solar 1"},
-  {Source: "LBNLUSS", nativeID: "Misae Solar (Phase 1)"},
-  {Source: "LBNLUSS", nativeID: "Syncarpha Puddon II Hybrid CSG"},
-  {Source: "LBNLUSS", nativeID: "Randall Solar Project Hybrid (ZPD-PT Solar Project 2017-017 LLC)"},
-  {Source: "LBNLUSS", nativeID: "East Brookfield Adams Road Solar CSG"},
-  {Source: "LBNLUSS", nativeID: "Branch Solar Farm"},
-  {Source: "LBNLUSS", nativeID: "59 Federal Rd(CSG)"},
-  {Source: "LBNLUSS", nativeID: "77 Farm to Market Rd Hybrid (77F2M Wham8 Solar)"},
-  {Source: "LBNLUSS", nativeID: "SCH - (2A) 156 Barhydt Rd Glenville"},
-  {Source: "LBNLUSS", nativeID: "IMPA Richmond 5 Solar Park"},
-  {Source: "LBNLUSS", nativeID: "AES Belleville Solar LLC"},
-  {Source: "LBNLUSS", nativeID: "Brightwood Solar"},
-  {Source: "LBNLUSS", nativeID: "SR Arlington I"},
-  {Source: "LBNLUSS", nativeID: "O'Brien Solar Fields"},
-  {Source: "LBNLUSS", nativeID: "Energix Leatherwood"},
-  {Source: "LBNLUSS", nativeID: "NY8 - Branscomb Solar"},
-  {Source: "LBNLUSS", nativeID: "Toms River Solar (EDF Ph1 Toms River)"},
-  {Source: "LBNLUSS", nativeID: "Rawhide Prairie Solar Hybrid"},
-  {Source: "LBNLUSS", nativeID: "Corazon Energy"},
-  {Source: "LBNLUSS", nativeID: "Syncarpha Millbury Hybrid (CSG)"},
-  {Source: "LBNLUSS", nativeID: "West Haydenville PJ (aka Particle Wave)"},
-  {Source: "LBNLUSS", nativeID: "Beacon Solar, LLC"},
-  {Source: "LBNLUSS", nativeID: "Linton"},
-  {Source: "LBNLUSS", nativeID: "Wonderful Firebaugh"},
-  {Source: "LBNLUSS", nativeID: "Laskin Solar"},
-  {Source: "LBNLUSS", nativeID: "Project Orioles Solar Facility (aka SG Noriole PV, LLC)"},
-  {Source: "LBNLUSS", nativeID: "Brainerd Airport"},
-  {Source: "LBNLUSS", nativeID: "Anderson 6"},
-  {Source: "LBNLUSS", nativeID: "Bremen"},
-  {Source: "LBNLUSS", nativeID: "West Plains Solar I"},
-  {Source: "LBNLUSS", nativeID: "Hertford Solar Power, LLC"},
-  {Source: "LBNLUSS", nativeID: "Tank Farm 4"},
-  {Source: "LBNLUSS", nativeID: "Jonesboro CWL Solar Park"},
-  {Source: "LBNLUSS", nativeID: "Brighter Future Solar"},
-  {Source: "LBNLUSS", nativeID: "RI King Community Solar Project (TPE King Solar Holdings1, LLC)"},
-  {Source: "LBNLUSS", nativeID: "Java Solar, LLC"},
-  {Source: "LBNLUSS", nativeID: "High Shoals PV1"},
-  {Source: "LBNLUSS", nativeID: "Antelope Expansion 1B"},
-  {Source: "LBNLUSS", nativeID: "Wister Solar"},
-  {Source: "LBNLUSS", nativeID: "NY8 - Regan Solar"},
-  {Source: "LBNLUSS", nativeID: "Ghost Orchid Solar Energy Center"},
-  {Source: "LBNLUSS", nativeID: "Bluegrass Solar"},
-  {Source: "LBNLUSS", nativeID: "Fish Springs Ranch Solar Energy Center"},
-  {Source: "LBNLUSS", nativeID: "Big River Solar"},
-  {Source: "LBNLUSS", nativeID: "Blythe Mesa Solar II (Athos III)"},
-  {Source: "LBNLUSS", nativeID: "Fighting Jays Solar Project"},
-  {Source: "LBNLUSS", nativeID: "Old Middleboro Road Solar"},
-  {Source: "LBNLUSS", nativeID: "Angel Fire Energy Facility"},
-  {Source: "LBNLUSS", nativeID: "Bonduel Solar WI, LLC"},
-  {Source: "LBNLUSS", nativeID: "BCE Los Alamitos 2"},
-  {Source: "LBNLUSS", nativeID: "BCE Los Alamitos 1"},
-  {Source: "LBNLUSS", nativeID: "Bonanza"},
-  {Source: "LBNLUSS", nativeID: "Sylvan Solar"},
-  {Source: "LBNLUSS", nativeID: "Mount Olive Solar Farm"},
-  {Source: "GPPDB", nativeID: "Hayworth Solar"},
-  {Source: "GPPDB", nativeID: "Atlanta Falcons Solar"},
-  {Source: "LBNLUSS", nativeID: "Norge Solar Farm"},
-  {Source: "LBNLUSS", nativeID: "Greenstone Solar, LLC"},
-  {Source: "LBNLUSS", nativeID: "Ripley (MD Solar 2)"},
-  {Source: "LBNLUSS", nativeID: "Prairie Creek Solar"},
-  {Source: "LBNLUSS", nativeID: "Bird Dog Solar"},
-  {Source: "LBNLUSS", nativeID: "Black Mesa Solar, LLC"},
-  {Source: "LBNLUSS", nativeID: "Robin Hollow Solar"},
-  {Source: "LBNLUSS", nativeID: "Sycamore Solar"},
-  {Source: "LBNLUSS", nativeID: "Flint Hills Resources Pine Bend, LLC"},
-  {Source: "LBNLUSS", nativeID: "Pitts Dudik Solar"},
-  {Source: "LBNLUSS", nativeID: "Blue Harvest Solar Park"},
-  {Source: "LBNLUSS", nativeID: "Jicarilla Solar 1 LLC"},
-  {Source: "LBNLUSS", nativeID: "NMRD Data Center III"},
-  {Source: "LBNLUSS", nativeID: "Alafia Solar"},
-  {Source: "LBNLUSS", nativeID: "Otter Creek Solar"},
-  {Source: "LBNLUSS", nativeID: "Caden Energix Axton LLC"},
-  {Source: "LBNLUSS", nativeID: "Nestlewood Solar"},
-  {Source: "LBNLUSS", nativeID: "High Point Solar LLC"},
-  {Source: "LBNLUSS", nativeID: "Oak Trail Solar, LLC"},
-  {Source: "LBNLUSS", nativeID: "Delta's Edge Solar"},
-  {Source: "LBNLUSS", nativeID: "Buena Vista Energy Center"},
-  {Source: "LBNLUSS", nativeID: "Yellow Pine Solar I"},
-  {Source: "LBNLUSS", nativeID: "Umbriel Solar"},
-  {Source: "LBNLUSS", nativeID: "Concho Valley Solar, LLC"},
-  {Source: "LBNLUSS", nativeID: "Eiffel Solar Project"},
-  {Source: "LBNLUSS", nativeID: "Dunn's Bridge 1 Solar"},
-  {Source: "LBNLUSS", nativeID: "Yellowbud Solar, LLC"},
-  {Source: "LBNLUSS", nativeID: "Eagle Shadow Mountain Solar Farm"},
-  {Source: "LBNLUSS", nativeID: "Exelon City Solar (West Pullman Industrial Redevelopment Area)"},
-  {Source: "LBNLUSS", nativeID: "Franklin Solar"},
-  {Source: "LBNLUSS", nativeID: "Ash Mesa Solar, LLC"},
-  {Source: "LBNLUSS", nativeID: "HWY 158 PV"},
-  {Source: "LBNLUSS", nativeID: "Stratford Solar Center, LLC"},
-  {Source: "SolarPACES", nativeID: "Maricopa Solar Project"},
-  {Source: "SolarPACES", nativeID: "Martin Next Generation Solar Energy Center"},
-  {Source: "SolarPACES", nativeID: "Stillwater GeoSolar Hybrid Plant"},
-  {Source: "gspt", nativeID: "Solar Electric Generating Station"},
-  {Source: "gspt", nativeID: "Titusville Solar"},
-  {Source: "gspt", nativeID: "City & County of Denver at Denver Int'l solar farm"},
-  {Source: "gspt", nativeID: "Adelanto Solar Project"},
-  {Source: "gspt", nativeID: "Alpine Solar"},
-  {Source: "gspt", nativeID: "Solana Solar Generating Station"},
-  {Source: "gspt", nativeID: "Spectrum Solar Power Project"},
-  {Source: "gspt", nativeID: "Topaz solar farm"},
-  {Source: "gspt", nativeID: "Leominster MA-South Street-R&D solar farm"},
-  {Source: "gspt", nativeID: "Cottage Street Solar Facility"},
-  {Source: "gspt", nativeID: "Fort Huachuca Solar PV Project"},
-  {Source: "gspt", nativeID: "Imclone Solar Electric Facility"},
-  {Source: "gspt", nativeID: "Indianapolis Motor Speedway Solar PV"},
-  {Source: "gspt", nativeID: "Maywood Photovoltaic Project solar farm"},
-  {Source: "gspt", nativeID: "New Bedford MA Plymouth solar farm"},
-  {Source: "gspt", nativeID: "RE Columbia Two solar farm"},
-  {Source: "gspt", nativeID: "Searchlight Solar"},
-  {Source: "gspt", nativeID: "Stateline Solar"},
-  {Source: "gspt", nativeID: "Apple Data Center PV3 solar farm"},
-  {Source: "gspt", nativeID: "Catalina Solar 2"},
-  {Source: "gspt", nativeID: "Creswell Alligood Solar"},
-  {Source: "gspt", nativeID: "Leicester One MA Solar"},
-  {Source: "gspt", nativeID: "Morelos del Sol solar farm"},
-  {Source: "gspt", nativeID: "SR Camden solar farm"},
-  {Source: "gspt", nativeID: "Santa Fe Solar Energy Center"},
-  {Source: "gspt", nativeID: "Santolina Solar Energy Center"},
-  {Source: "gspt", nativeID: "South Milford Solar Plant"},
-  {Source: "gspt", nativeID: "UC Davis South Campus solar farm"},
-  {Source: "gspt", nativeID: "Wildwood Solar"},
-  {Source: "gspt", nativeID: "Fort Gordon Solar Facility"},
-  {Source: "gspt", nativeID: "Avalon Solar II"},
-  {Source: "gspt", nativeID: "Eichtens Community Solar"},
-  {Source: "gspt", nativeID: "Longview (Maryland) solar farm"},
-  {Source: "gspt", nativeID: "Tropico Solar PV Plant"},
-  {Source: "gspt", nativeID: "Twin Branch PV solar farm"},
-  {Source: "gspt", nativeID: "Solaire Holman Solar Project"},
-  {Source: "gspt", nativeID: "AEP Jacksonville Solar Project"},
-  {Source: "gspt", nativeID: "BNB Camden Solar"},
-  {Source: "gspt", nativeID: "Genentech Vacaville Meter 1 solar farm"},
-  {Source: "gspt", nativeID: "General Electric Aircraft Engines solar farm"},
-  {Source: "gspt", nativeID: "Next Generation Solar Farm"},
-  {Source: "gspt", nativeID: "Onyx - Brockton Thatcher Landfill Solar CSG"},
-  {Source: "gspt", nativeID: "Pine Island Solar CSG"},
-  {Source: "gspt", nativeID: "San Luis Valley Solar Array"},
-  {Source: "gspt", nativeID: "Stanford Campus Solar"},
-  {Source: "gspt", nativeID: "TPE Whitney Solar"},
-  {Source: "gspt", nativeID: "Van der Hoek Solar Array/ Dairy"},
-  {Source: "gspt", nativeID: "Kingston solar farm (United States)"},
-  {Source: "gspt", nativeID: "Pecan Solar"},
-  {Source: "gspt", nativeID: "Shiloh Road solar farm"},
-  {Source: "gspt", nativeID: "Bly Solar Center"},
-  {Source: "gspt", nativeID: "GSPP Gilman solar farm"},
-  {Source: "gspt", nativeID: "Richmond Solar Site 2"},
-  {Source: "gspt", nativeID: "SCE&G Nimitz CSG solar farm"},
-  {Source: "gspt", nativeID: "Stony Brook solar farm"},
-  {Source: "gspt", nativeID: "Tinker NC solar farm"},
-  {Source: "gspt", nativeID: "Wareham Solar PV"},
-  {Source: "gspt", nativeID: "Citizens Imperial Solar"},
-  {Source: "gspt", nativeID: "Kayenta Solar Project"},
-  {Source: "gspt", nativeID: "Phoebe Solar"},
-  {Source: "gspt", nativeID: "Springbok solar farm"},
-  {Source: "gspt", nativeID: "Tallahassee Solar"},
-  {Source: "gspt", nativeID: "Alton Road Solar"},
-  {Source: "gspt", nativeID: "CED Northampton Solar Hybrid"},
-  {Source: "gspt", nativeID: "Coody Cochran solar farm"},
-  {Source: "gspt", nativeID: "DG Amaze ACY1 solar farm"},
-  {Source: "gspt", nativeID: "Fountain Folkston solar farm"},
-  {Source: "gspt", nativeID: "Guyton Community Solar"},
-  {Source: "gspt", nativeID: "IBM Solar"},
-  {Source: "gspt", nativeID: "Montague Road Solar"},
-  {Source: "gspt", nativeID: "O'Neill Creek Solar"},
-  {Source: "gspt", nativeID: "Ramapo solar project"},
-  {Source: "gspt", nativeID: "Wadesboro 4 solar farm"},
-  {Source: "gspt", nativeID: "Waynesboro Community Solar"},
-  {Source: "gspt", nativeID: "Camilla Solar Energy Project"},
-  {Source: "gspt", nativeID: "Grasshopper Solar"},
-  {Source: "gspt", nativeID: "Maverick Solar"},
-  {Source: "gspt", nativeID: "Mechanicsville Solar"},
-  {Source: "gspt", nativeID: "Midlands solar farm (United States)"},
-  {Source: "gspt", nativeID: "Okeechobee Solar"},
-  {Source: "gspt", nativeID: "Palmer Solar"},
-  {Source: "gspt", nativeID: "Salome Solar"},
-  {Source: "gspt", nativeID: "Annese Solar Project Hybrid CSG"},
-  {Source: "gspt", nativeID: "Bighorn Solar"},
-  {Source: "gspt", nativeID: "Bulloch Neville Farms solar farm"},
-  {Source: "gspt", nativeID: "City of Tulare Water Facility solar project"},
-  {Source: "gspt", nativeID: "Horn Rapids Solar Storage and Training"},
-  {Source: "gspt", nativeID: "ISM Solar Cranston CSG"},
-  {Source: "gspt", nativeID: "Limelight Solar III, LLC"},
-  {Source: "gspt", nativeID: "Oxy Renewable Energy - Goldsmith solar farm"},
-  {Source: "gspt", nativeID: "Putnam Erickson solar farm"},
-  {Source: "gspt", nativeID: "SulusSolar17"},
-  {Source: "gspt", nativeID: "Underwood PV2 solar farm"},
-  {Source: "gspt", nativeID: "White Street Renewables solar farm"},
-  {Source: "gspt", nativeID: "ANSON Solar Center"},
-  {Source: "gspt", nativeID: "Arbor Hill Solar"},
-  {Source: "gspt", nativeID: "Dressor Plains Solar"},
-  {Source: "gspt", nativeID: "Galloway solar farm"},
-  {Source: "gspt", nativeID: "Greasewood solar farm"},
-  {Source: "gspt", nativeID: "Harts Mill Solar"},
-  {Source: "gspt", nativeID: "Lancaster Solar"},
-  {Source: "gspt", nativeID: "Millican Solar Energy"},
-  {Source: "gspt", nativeID: "Perry solar farm"},
-  {Source: "gspt", nativeID: "Pleinmont Solar"},
-  {Source: "gspt", nativeID: "Rodeo Solar Center"},
-  {Source: "gspt", nativeID: "Sigurd Solar"},
-  {Source: "gspt", nativeID: "Taygete Energy Project solar farm"},
-  {Source: "gspt", nativeID: "Amaterasu solar farm"},
-  {Source: "gspt", nativeID: "BWC Lake Lashaway Hybrid solar farm"},
-  {Source: "gspt", nativeID: "California State Univ at Channel Islands solar farm"},
-  {Source: "gspt", nativeID: "DOCCS Greenhaven solar farm"},
-  {Source: "gspt", nativeID: "Laredo Detention Facility solar farm"},
-  {Source: "gspt", nativeID: "Lenox Renewables solar project"},
-  {Source: "gspt", nativeID: "Robin Solar"},
-  {Source: "gspt", nativeID: "Rochambeau solar farm"},
-  {Source: "gspt", nativeID: "Thunderhead solar farm"},
-  {Source: "gspt", nativeID: "West Riverside Energy Center solar farm"},
-  {Source: "gspt", nativeID: "Arrow Canyon Solar Hybrid"},
-  {Source: "gspt", nativeID: "Brightside solar farm"},
-  {Source: "gspt", nativeID: "Dodge Flat solar farm"},
-  {Source: "gspt", nativeID: "Edwards Sanborn solar farm"},
-  {Source: "gspt", nativeID: "Hickory Park Solar Hybrid"},
-  {Source: "gspt", nativeID: "Lund Hill Solar"},
-  {Source: "gspt", nativeID: "Maplewood (Dominion) solar farm"},
-  {Source: "gspt", nativeID: "Meherrin Solar"},
-  {Source: "gspt", nativeID: "Noble Solar"},
-  {Source: "gspt", nativeID: "Shakes solar farm"},
-  {Source: "gspt", nativeID: "Solidago (ENGIE) Solar"},
-  {Source: "gspt", nativeID: "Wood County Solar Project"},
-  {Source: "gspt", nativeID: "BD Solar Hancock"},
-  {Source: "gspt", nativeID: "DRPA Woodcrest Station Solar Project"},
-  {Source: "gspt", nativeID: "ER Center Road Solar"},
-  {Source: "gspt", nativeID: "Rockmart solar project"},
-  {Source: "gspt", nativeID: "Taos Mesa Energy Facility Hybrid solar farm"},
-  {Source: "gspt", nativeID: "West Valley Mission CCD Solar Project"},
-  {Source: "gspt", nativeID: "White Rock Road LLC solar project"},
-  {Source: "gspt", nativeID: "Bay Ranch Solar Power Plant"},
-  {Source: "gspt", nativeID: "Hardeetown Solar Power Plant"},
-  {Source: "gspt", nativeID: "Hoot Lake Solar Project"},
-  {Source: "gspt", nativeID: "CSU Pueblo solar farm"},
-  {Source: "gspt", nativeID: "SunEdison Walmart Apple Valley DC solar farm"},
-  {Source: "gspt", nativeID: "Monterey Regional Water Pollution Control Agency solar farm"},
-  {Source: "gspt", nativeID: "Lancaster Baptist Church solar farm"},
-  {Source: "gspt", nativeID: "SDCCD - Miramar solar farm"},
-  {Source: "gspt", nativeID: "SDCWA - Twin Oaks solar farm"},
-  {Source: "gspt", nativeID: "EAFB - North Base solar farm"},
-  {Source: "gspt", nativeID: "EAFB - South Base solar farm"},
-  {Source: "gspt", nativeID: "LTMUA solar farm"},
-  {Source: "gspt", nativeID: "Martin Limestone Solar Array"},
-  {Source: "gspt", nativeID: "Tahquitz High School solar farm"},
-  {Source: "gspt", nativeID: "West Valley High School Solar"},
-  {Source: "gspt", nativeID: "E&B Resources solar farm"},
-  {Source: "gspt", nativeID: "Sue Cleveland High School solar farm"},
-  {Source: "gspt", nativeID: "Clarkstown Landfill Solar Facility"},
-  {Source: "gspt", nativeID: "Katama Farm solar farm"},
-  {Source: "gspt", nativeID: "Las Virgenes Municipal Water District solar farm"},
-  {Source: "gspt", nativeID: "Las Virgenes solar farm"},
-  {Source: "gspt", nativeID: "Richland solar farm"},
-  {Source: "gspt", nativeID: "Tihonet Solar"},
-  {Source: "gspt", nativeID: "Vidalia Water Treatment Plant solar farm"},
-  {Source: "gspt", nativeID: "Bridgewater Solar CSG"},
-  {Source: "gspt", nativeID: "Holliston Solar CSG"},
-  {Source: "gspt", nativeID: "CPS 1 Community Solar"},
-  {Source: "gspt", nativeID: "CSUF State College solar farm"},
-  {Source: "gspt", nativeID: "Canis Minor Solar Farm"},
-  {Source: "gspt", nativeID: "Cottonwood Solar Cottonwood Carport"},
-  {Source: "gspt", nativeID: "Owens Valley Solar Project 11"},
-  {Source: "gspt", nativeID: "Tri-County Solar Facility"},
-  {Source: "gspt", nativeID: "Valley Sanitary District WTP Solar"},
-  {Source: "gspt", nativeID: "Aries Community Solar"},
-  {Source: "gspt", nativeID: "Barton Acres Solar CSG"},
-  {Source: "gspt", nativeID: "CMEEC - Navy NE Trident solar farm"},
-  {Source: "gspt", nativeID: "Delano Land 1 solar farm"},
-  {Source: "gspt", nativeID: "IRE Solar I"},
-  {Source: "gspt", nativeID: "Mapleton Community Solar"},
-  {Source: "gspt", nativeID: "Sand Lake DPC Solar"},
-  {Source: "gspt", nativeID: "Valdosta Prison solar farm"},
-  {Source: "gspt", nativeID: "Vega Community Solar"},
-  {Source: "gspt", nativeID: "Webster Solar"},
-  {Source: "gspt", nativeID: "Clovis East High School solar project"},
-  {Source: "gspt", nativeID: "Corvus Community Solar"},
-  {Source: "gspt", nativeID: "Huneke I CSG solar farm"},
-  {Source: "gspt", nativeID: "Krause CSG solar farm"},
-  {Source: "gspt", nativeID: "Lon Wright solar farm"},
-  {Source: "gspt", nativeID: "RJC II Community Solar Garden"},
-  {Source: "gspt", nativeID: "Taurus Community Solar"},
-  {Source: "gspt", nativeID: "Winegar CSG solar farm"},
-  {Source: "gspt", nativeID: "Bibb Jones solar farm"},
-  {Source: "gspt", nativeID: "Butler-Warner Generation Plant solar farm"},
-  {Source: "gspt", nativeID: "FastSun 14 CSG solar farm"},
-  {Source: "gspt", nativeID: "GSPP Imholte CSG solar farm"},
-  {Source: "gspt", nativeID: "GSSP Schneider solar farm"},
-  {Source: "gspt", nativeID: "Lange Solar"},
-  {Source: "gspt", nativeID: "MSC-Chisago01 CSG solar farm"},
-  {Source: "gspt", nativeID: "MSC-Empire01 solar farm"},
-  {Source: "gspt", nativeID: "Novel Reber Solar CSG"},
-  {Source: "gspt", nativeID: "Olinda Trail Solar"},
-  {Source: "gspt", nativeID: "Sherburne Community Solar One CSG"},
-  {Source: "gspt", nativeID: "USS Lake Patterson Solar CSG"},
-  {Source: "gspt", nativeID: "Wollan Garden Solar"},
-  {Source: "gspt", nativeID: "PopeSun CSG solar farm"},
-  {Source: "gspt", nativeID: "CA Institute for Women solar farm"},
-  {Source: "gspt", nativeID: "Catalina Express solar farm"},
-  {Source: "gspt", nativeID: "FastSun 11 CSG solar farm"},
-  {Source: "gspt", nativeID: "FastSun 5 CSG solar farm"},
-  {Source: "gspt", nativeID: "Goldman Sachs Carports Solar"},
-  {Source: "gspt", nativeID: "Goodhue Community Solar One CSG"},
-  {Source: "gspt", nativeID: "Goodhue Community Solar Three CSG"},
-  {Source: "gspt", nativeID: "Hammer Community CSG solar farm"},
-  {Source: "gspt", nativeID: "Hertzberg Community CSG solar farm"},
-  {Source: "gspt", nativeID: "Huneke CSG 2 solar farm"},
-  {Source: "gspt", nativeID: "Novel Bartel Solar CSG"},
-  {Source: "gspt", nativeID: "Novel Byron Solar CSG"},
-  {Source: "gspt", nativeID: "Novel DeCook Solar CSG"},
-  {Source: "gspt", nativeID: "Novel Haley Solar CSG"},
-  {Source: "gspt", nativeID: "Novel Herber Solar CSG"},
-  {Source: "gspt", nativeID: "Novel Jewison Solar CSG"},
-  {Source: "gspt", nativeID: "Novel Kanewischer Solar CSG"},
-  {Source: "gspt", nativeID: "Novel Pederson Solar CSG"},
-  {Source: "gspt", nativeID: "Novel Schmoll Farms Solar CSG"},
-  {Source: "gspt", nativeID: "Siems Solar Project CSG"},
-  {Source: "gspt", nativeID: "Sobania Community Solar"},
-  {Source: "gspt", nativeID: "USS All In Solar CSG"},
-  {Source: "gspt", nativeID: "USS Christoffer Solar CSG"},
-  {Source: "gspt", nativeID: "USS Horne South Solar CSG"},
-  {Source: "gspt", nativeID: "USS Milkweed Solar CSG"},
-  {Source: "gspt", nativeID: "USS Reindeer Solar CSG"},
-  {Source: "gspt", nativeID: "USS Solar Sources CSG"},
-  {Source: "gspt", nativeID: "USS Solar Way CSG"},
-  {Source: "gspt", nativeID: "USS Turkey Solar CSG"},
-  {Source: "gspt", nativeID: "Whatley Renewables solar farm"},
-  {Source: "gspt", nativeID: "Airport 009239 SCS Lexington solar farm"},
-  {Source: "gspt", nativeID: "Blue Skies Solar, LLC"},
-  {Source: "gspt", nativeID: "Dos Palos solar farm"},
-  {Source: "gspt", nativeID: "Electric Avenue Lunenburg Solar 1"},
-  {Source: "gspt", nativeID: "Five H Farms Solar Array"},
-  {Source: "gspt", nativeID: "Forrest City- Prison Site solar farm"},
-  {Source: "gspt", nativeID: "Honeysuckle Solar"},
-  {Source: "gspt", nativeID: "Hot Springs 2020 solar farm"},
-  {Source: "gspt", nativeID: "Lantana Solar"},
-  {Source: "gspt", nativeID: "Medin 2 Community Solar CSG"},
-  {Source: "gspt", nativeID: "Novel Peter Solar CSG"},
-  {Source: "gspt", nativeID: "Old Cedar Solar Energy Storage"},
-  {Source: "gspt", nativeID: "SCS Plainfield 011755 Naperville solar farm"},
-  {Source: "gspt", nativeID: "Schull CSG solar farm"},
-  {Source: "gspt", nativeID: "Studenski Community Solar CSG"},
-  {Source: "gspt", nativeID: "USS Steamboat Solar CSG"},
-  {Source: "gspt", nativeID: "Union Garden solar farm"},
-  {Source: "gspt", nativeID: "Van der Kooi Dairy Solary Array"},
-  {Source: "gspt", nativeID: "Skalbeck Solar"},
-  {Source: "gspt", nativeID: "MN CSG 2019-16 solar farm"},
-  {Source: "gspt", nativeID: "USS Itasca Clean Energy Solar"},
-  {Source: "gspt", nativeID: "USS Prokosch Solar"},
-  {Source: "gspt", nativeID: "USS Verbena Solar"},
-  {Source: "gspt", nativeID: "USS Water Fowl Solar CSG"},
-  {Source: "gspt", nativeID: "Ventura solar project"},
-  {Source: "gspt", nativeID: "Phoenix Airport East Economy Lot solar farm"},
-  {Source: "gspt", nativeID: "CDCR CA - Solano State Prison solar farm"},
-  {Source: "gspt", nativeID: "Dartmouth Landfill solar farm"},
-  {Source: "gspt", nativeID: "New Haven Solar RES"},
-  {Source: "gspt", nativeID: "Decatur Co. Solar RES IN"},
-  {Source: "gspt", nativeID: "Adirondack Solar"},
-  {Source: "gspt", nativeID: "SeaWorld Aquatica solar farm"},
-  {Source: "gspt", nativeID: "Town of Branford solar farm"},
-  {Source: "gspt", nativeID: "Pleasanton - Amador Valley High School solar farm"},
-  {Source: "gspt", nativeID: "Atascadero State Hospital solar farm"},
-  {Source: "gspt", nativeID: "Fredonia Solar"},
-  {Source: "gspt", nativeID: "Rancho Cordova Medical Offices solar farm"},
-  {Source: "gspt", nativeID: "Palo Verde College solar farm"},
-  {Source: "gspt", nativeID: "Presbyterian Senior Living Service solar farm"},
-  {Source: "gspt", nativeID: "Wilzig Associates solar farm"},
-  {Source: "gspt", nativeID: "CDCR CA - Pleasant Valley State Prison solar farm"},
-  {Source: "gspt", nativeID: "Geneseo solar farm"},
-  {Source: "gspt", nativeID: "Jackson Board of Education-Liberty HS solar farm"},
-  {Source: "gspt", nativeID: "Garrett County - DPU Treatment Plant solar farm"},
-  {Source: "gspt", nativeID: "Holtsville Solar Project"},
-  {Source: "gspt", nativeID: "Letchworth Solar Project"},
-  {Source: "gspt", nativeID: "San Luis Solar Garden"},
-  {Source: "gspt", nativeID: "Town of Foxborough - Landfill SREC II CSG solar farm"},
-  {Source: "gspt", nativeID: "Santa Rosa Junior College Petaluma Solar"},
-  {Source: "gspt", nativeID: "Fresno Bullard High School Hybrid solar farm"},
-  {Source: "gspt", nativeID: "ER Bone Hill Solar"},
-  {Source: "gspt", nativeID: "WW-DC Solar 1"},
-  {Source: "gspt", nativeID: "Canandaigua Westbrook Solar Array"},
-  {Source: "gspt", nativeID: "Folsom SP and CSP Sacramento solar farm"},
-  {Source: "gspt", nativeID: "GreenparkSolar"},
-  {Source: "gspt", nativeID: "Kirby Road Solar"},
-  {Source: "gspt", nativeID: "Bakersfield 111 solar farm"},
-  {Source: "gspt", nativeID: "Millbrook School solar farm"},
-  {Source: "gspt", nativeID: "Greenwood Solar Farm"},
-  {Source: "gspt", nativeID: "Denver Braswell PV solar farm"},
-  {Source: "gspt", nativeID: "Columbia Bryson solar farm"},
-  {Source: "gspt", nativeID: "Gavilan Community College Solar Project"},
-  {Source: "gspt", nativeID: "Grossmont HS Solar Project"},
-  {Source: "gspt", nativeID: "Intel - Ocotillo Campus Solar"},
-  {Source: "gspt", nativeID: "456 Lower solar farm"},
-  {Source: "gspt", nativeID: "Frey Rd 2 Community Solar Farm"},
-  {Source: "gspt", nativeID: "Frey Rd 1 Community Solar Farm"},
-  {Source: "gspt", nativeID: "MNCPPC Randall Farm solar farm"},
-  {Source: "gspt", nativeID: "Town of Ware - Canadian Tree CSG solar farm"},
-  {Source: "gspt", nativeID: "Seabrook Solar Plant"},
-  {Source: "gspt", nativeID: "Waste Water Treatment Plant solar farm"},
-  {Source: "gspt", nativeID: "CDCR CA - Wasco State Prison solar farm"},
-  {Source: "gspt", nativeID: "Grafton Solar"},
-  {Source: "gspt", nativeID: "Thermo Fisher solar farm"},
-  {Source: "gspt", nativeID: "Chatham Landfill solar farm"},
-  {Source: "gspt", nativeID: "Farmersville solar farm"},
-  {Source: "gspt", nativeID: "MEBA solar farm"},
-  {Source: "gspt", nativeID: "Porterville 6 and 7 solar farm"},
-  {Source: "gspt", nativeID: "Sacramento SMUD solar farm"},
-  {Source: "gspt", nativeID: "Brickyard Solar"},
-  {Source: "gspt", nativeID: "Sun Harvest Solar NDP1"},
-  {Source: "gspt", nativeID: "Henry Miller RD solar project"},
-  {Source: "gspt", nativeID: "Chesapeake College solar farm"},
-  {Source: "gspt", nativeID: "Conejos 1 Community Solar Array"},
-  {Source: "gspt", nativeID: "Logan 1 Community Solar Array"},
-  {Source: "gspt", nativeID: "Orange County Solar Farm NY"},
-  {Source: "gspt", nativeID: "Weld 1 Community Solar Array"},
-  {Source: "gspt", nativeID: "Broadalbin-Perth Solar"},
-  {Source: "gspt", nativeID: "CEC Solar 1117"},
-  {Source: "gspt", nativeID: "First Baptist Church of Glenarden solar farm"},
-  {Source: "gspt", nativeID: "Liberty HS Solar Project"},
-  {Source: "gspt", nativeID: "Oak Leaf Solar XXI CSG"},
-  {Source: "gspt", nativeID: "Quincy Colorado solar farm"},
-  {Source: "gspt", nativeID: "Arapahoe 3 Community Solar Array"},
-  {Source: "gspt", nativeID: "Oak Leaf Solar XXVII"},
-  {Source: "gspt", nativeID: "Oak Leaf Solar XXX CSG"},
-  {Source: "gspt", nativeID: "Theodore Drive Community Solar"},
-  {Source: "gspt", nativeID: "Elroy Solar"},
-  {Source: "gspt", nativeID: "Mesa CSG 1 Murdock solar farm"},
-  {Source: "gspt", nativeID: "Oak Leaf Solar XXII CSG"},
-  {Source: "gspt", nativeID: "Oak Leaf Solar XXIII CSG"},
-  {Source: "gspt", nativeID: "Oak Leaf Solar XXIV CSG"},
-  {Source: "gspt", nativeID: "Lowndes IDA solar farm"},
-  {Source: "gspt", nativeID: "SR Innovation - NIKE PV solar farm"},
-  {Source: "gspt", nativeID: "196 Tremont St CSG solar farm"},
-  {Source: "gspt", nativeID: "El Dorado Solar"},
-  {Source: "gspt", nativeID: "JM Huber at Quincy solar farm"},
-  {Source: "gspt", nativeID: "POM Juice Solar"},
-  {Source: "gspt", nativeID: "Strobus solar farm"},
-  {Source: "gspt", nativeID: "Blue Hen Solar"},
-  {Source: "gspt", nativeID: "Kankakee 2 solar project"},
-  {Source: "gspt", nativeID: "BWC Swan Pond River CSG solar farm"},
-  {Source: "gspt", nativeID: "Greene County Meter 1 solar farm"},
-  {Source: "gspt", nativeID: "Firestone Walker Brewery - Phase 1 solar farm"},
-  {Source: "gspt", nativeID: "Middletown Solar 1 Hybrid CSG"},
-  {Source: "gspt", nativeID: "Rock Creek 2 CSG solar farm"},
-  {Source: "gspt", nativeID: "Prudential 80 Livingston Roseland Solar"},
-  {Source: "gspt", nativeID: "Oregon University System OIT Klamath Falls solar farm"},
-  {Source: "gspt", nativeID: "Hampshire College Hybrid solar farm"},
-  {Source: "gspt", nativeID: "West Bridgewater AB CSG solar farm"},
-  {Source: "gspt", nativeID: "Bd of Educ of Queen Anne's Cnty Cnty HS solar farm"},
-  {Source: "gspt", nativeID: "Bethlehem Solar"},
-  {Source: "gspt", nativeID: "Terrell Riles Stovall solar farm"},
-  {Source: "gspt", nativeID: "Epic Verona solar farm"},
-  {Source: "gspt", nativeID: "SunGen Sharon 1 solar farm"},
-  {Source: "gspt", nativeID: "Park St solar farm"},
-  {Source: "gspt", nativeID: "Skidmore College solar farm"},
-  {Source: "gspt", nativeID: "ESA Smithfield solar farm"},
-  {Source: "gspt", nativeID: "Westminster solar farm"},
-  {Source: "gspt", nativeID: "Madison County solar farm"},
-  {Source: "gspt", nativeID: "County of Dutchess NY Airport solar farm"},
-  {Source: "gspt", nativeID: "Acushnet-Braley Road 1 solar farm"},
-  {Source: "gspt", nativeID: "Pierce College solar farm"},
-  {Source: "gspt", nativeID: "Denison Solar Array"},
-  {Source: "gspt", nativeID: "Hatfield Renewables Community Solar"},
-  {Source: "gspt", nativeID: "Innovative Solar 35"},
-  {Source: "gspt", nativeID: "McCleskey Cotton solar farm"},
-  {Source: "gspt", nativeID: "Mount Hope West solar farm"},
-  {Source: "gspt", nativeID: "Mount Hope East solar farm"},
-  {Source: "gspt", nativeID: "Kearsarge Acushnet solar project"},
-  {Source: "gspt", nativeID: "Cruise Solar"},
-  {Source: "gspt", nativeID: "Hot Springs Energy Storage & Microgrid solar farm"},
-  {Source: "gspt", nativeID: "Axio Green solar farm"},
-  {Source: "gspt", nativeID: "Dunn solar farm"},
-  {Source: "gspt", nativeID: "Kenansville AES solar farm"},
-  {Source: "gspt", nativeID: "Rockland Solar CSG"},
-  {Source: "gspt", nativeID: "SEV NM Phase 2 solar farm"},
-  {Source: "gspt", nativeID: "St. Albans SPEED Project solar farm"},
-  {Source: "gspt", nativeID: "Stow PV solar farm"},
-  {Source: "gspt", nativeID: "Town of East Bridgewater CSG solar farm"},
-  {Source: "gspt", nativeID: "Warsaw II solar farm"},
-  {Source: "gspt", nativeID: "Duplin Solar"},
-  {Source: "gspt", nativeID: "Kennedy Solar"},
-  {Source: "gspt", nativeID: "Kenansville Solar 2"},
-  {Source: "gspt", nativeID: "DSH CA - Coalinga State Hospital solar farm"},
-  {Source: "gspt", nativeID: "Pittsgrove Solar"},
-  {Source: "gspt", nativeID: "Cornell Geneva Solar Farm"},
-  {Source: "gspt", nativeID: "Houghton solar farm"},
-  {Source: "gspt", nativeID: "IMPA Pendleton Solar Park"},
-  {Source: "gspt", nativeID: "Kenmare - Sullivan Community College solar farm"},
-  {Source: "gspt", nativeID: "Laurinburg Solar Heelstone"},
-  {Source: "gspt", nativeID: "Nashville Farms solar farm"},
-  {Source: "gspt", nativeID: "RGS-Rutland VNM SREC II Project MA solar farm"},
-  {Source: "gspt", nativeID: "Tompkins Cortland Community College solar farm"},
-  {Source: "gspt", nativeID: "York Road Solar I"},
-  {Source: "gspt", nativeID: "Canandaigua Solar Array"},
-  {Source: "gspt", nativeID: "Carver MA 1 Community Solar"},
-  {Source: "gspt", nativeID: "Spring Street Solar 1 CSG"},
-  {Source: "gspt", nativeID: "Brook Street Solar 1 CSG"},
-  {Source: "gspt", nativeID: "Plymouth Site 1 solar farm"},
-  {Source: "gspt", nativeID: "Harford Solar Farm"},
-  {Source: "gspt", nativeID: "Steel Sun solar farm"},
-  {Source: "gspt", nativeID: "Tannery Road Landfill solar farm"},
-  {Source: "gspt", nativeID: "Dartmouth Farms Solar"},
-  {Source: "gspt", nativeID: "Jefferson-Lewis BOCES Solar"},
-  {Source: "gspt", nativeID: "Onondaga County - Oak Orchard WWTP solar farm"},
-  {Source: "gspt", nativeID: "Onondaga County- Clearwater solar farm"},
-  {Source: "gspt", nativeID: "Onyx - Saratoga Springs Landfill Solar CSG"},
-  {Source: "gspt", nativeID: "Westport Community Solar Garden"},
-  {Source: "gspt", nativeID: "232 Long Branch 29 Solar"},
-  {Source: "gspt", nativeID: "Baer Road CSG solar farm"},
-  {Source: "gspt", nativeID: "CNMEC Solar Energy Center"},
-  {Source: "gspt", nativeID: "Chambers 3 - Erie County Alden solar farm"},
-  {Source: "gspt", nativeID: "Chambers 3 - Lewis County solar farm"},
-  {Source: "gspt", nativeID: "Czub CSG solar farm"},
-  {Source: "gspt", nativeID: "Duanesburg solar farm"},
-  {Source: "gspt", nativeID: "Gifford CSG solar farm"},
-  {Source: "gspt", nativeID: "Johnstown solar farm"},
-  {Source: "gspt", nativeID: "Onondaga County- Jamesville solar farm"},
-  {Source: "gspt", nativeID: "Oswego County - Fulton Solar"},
-  {Source: "gspt", nativeID: "Sunlight Beacon solar farm"},
-  {Source: "gspt", nativeID: "Time Warner Cable - Knowles solar farm"},
-  {Source: "gspt", nativeID: "UMCES Ground Mount solar farm"},
-  {Source: "gspt", nativeID: "Woodsdale Farm solar farm"},
-  {Source: "gspt", nativeID: "Bluefin Origination 1 solar farm"},
-  {Source: "gspt", nativeID: "East Fishkill CSG solar project"},
-  {Source: "gspt", nativeID: "Frederick County - Landfill solar farm"},
-  {Source: "gspt", nativeID: "Greenfield Solar PV"},
-  {Source: "gspt", nativeID: "NY - CSG - Ellsworth II solar farm"},
-  {Source: "gspt", nativeID: "Reisender Solar"},
-  {Source: "gspt", nativeID: "Rockdale solar project"},
-  {Source: "gspt", nativeID: "Savoy Solar PV"},
-  {Source: "gspt", nativeID: "Southampton Solar PV"},
-  {Source: "gspt", nativeID: "Spooner Solar Array"},
-  {Source: "gspt", nativeID: "Strauss CSG solar farm"},
-  {Source: "gspt", nativeID: "Wappinger 9D Solar"},
-  {Source: "gspt", nativeID: "Williamson solar farm"},
-  {Source: "gspt", nativeID: "100 Lower solar farm"},
-  {Source: "gspt", nativeID: "13 Mile Solar"},
-  {Source: "gspt", nativeID: "2662 Freeport Solar 1 CSG"},
-  {Source: "gspt", nativeID: "315 Vinson Road solar farm"},
-  {Source: "gspt", nativeID: "Corning Riverview CSG solar farm"},
-  {Source: "gspt", nativeID: "AES Tonawanda Solar"},
-  {Source: "gspt", nativeID: "ZPD-PT Solar Project 2017-023 Hybrid CSG"},
-  {Source: "gspt", nativeID: "Alicea Solar Project Hybrid CSG"},
-  {Source: "gspt", nativeID: "Blue Goose Solar CSG"},
-  {Source: "gspt", nativeID: "Briarwood solar farm"},
-  {Source: "gspt", nativeID: "Brickchurch Solar"},
-  {Source: "gspt", nativeID: "Burritt Rd Community Solar Farm"},
-  {Source: "gspt", nativeID: "Costanza Solar"},
-  {Source: "gspt", nativeID: "County Road 16 solar farm"},
-  {Source: "gspt", nativeID: "Dubois (Hybrid) Solar"},
-  {Source: "gspt", nativeID: "Freight Line Solar"},
-  {Source: "gspt", nativeID: "General Dynamics solar farm"},
-  {Source: "gspt", nativeID: "Hostetter Solar One"},
-  {Source: "gspt", nativeID: "Illinois PV Fulton 1 CSG solar farm"},
-  {Source: "gspt", nativeID: "Iroquois Solar 1B LLC CSG"},
-  {Source: "gspt", nativeID: "Kankakee Solar 4"},
-  {Source: "gspt", nativeID: "Kent School Road Solar 1"},
-  {Source: "gspt", nativeID: "Lafayette 2 - Kankakee Yonke solar farm"},
-  {Source: "gspt", nativeID: "Lafayette 2 - McHenry Franks 1 solar farm"},
-  {Source: "gspt", nativeID: "Lafayette 2 - McHenry Franks 2 solar farm"},
-  {Source: "gspt", nativeID: "Marengo Solar"},
-  {Source: "gspt", nativeID: "Mendota solar farm"},
-  {Source: "gspt", nativeID: "NY- CSG- Livingston 4 solar farm"},
-  {Source: "gspt", nativeID: "SSD Clackamas 4 solar farm"},
-  {Source: "gspt", nativeID: "SSD Marion 1 solar farm"},
-  {Source: "gspt", nativeID: "Sacket Lake Rd 1 Community Solar Farm"},
-  {Source: "gspt", nativeID: "Schulte 2 Community Solar"},
-  {Source: "gspt", nativeID: "Shawnee - GA solar farm"},
-  {Source: "gspt", nativeID: "Sullivan B Community Solar"},
-  {Source: "gspt", nativeID: "Vermilion Solar 1 CSG"},
-  {Source: "gspt", nativeID: "Westerlo NY 1 solar farm"},
-  {Source: "gspt", nativeID: "RT405 Westerlo Solar 2"},
-  {Source: "gspt", nativeID: "RT32 Westerlo Solar 1"},
-  {Source: "gspt", nativeID: "Ameresco Danville Solar"},
-  {Source: "gspt", nativeID: "Big Tree Community Solar Farm"},
-  {Source: "gspt", nativeID: "Broadway Road Solar"},
-  {Source: "gspt", nativeID: "CSG Mt. Morris 2 solar farm"},
-  {Source: "gspt", nativeID: "City of Bowie solar farm"},
-  {Source: "gspt", nativeID: "Cortland solar farm"},
-  {Source: "gspt", nativeID: "Drinkwater Solar"},
-  {Source: "gspt", nativeID: "IGS Frankfort 2 CSG solar farm"},
-  {Source: "gspt", nativeID: "IL Sidney Project1 solar project"},
-  {Source: "gspt", nativeID: "Kern A Community Solar CSG"},
-  {Source: "gspt", nativeID: "Lena solar farm"},
-  {Source: "gspt", nativeID: "Long John CSG solar farm"},
-  {Source: "gspt", nativeID: "Marlborough Solar"},
-  {Source: "gspt", nativeID: "McCarthy Solar"},
-  {Source: "gspt", nativeID: "Washingtonville CSG solar farm"},
-  {Source: "gspt", nativeID: "Monroe 009452 SCS Cozad solar farm"},
-  {Source: "gspt", nativeID: "Rockford CSG solar farm"},
-  {Source: "gspt", nativeID: "SoCore Clovis 1 solar farm"},
-  {Source: "gspt", nativeID: "Tower Road Solar CSG"},
-  {Source: "gspt", nativeID: "Viking Solar CSG"},
-  {Source: "gspt", nativeID: "Watertown Solar One"},
-  {Source: "gspt", nativeID: "Cattail (CSG) solar project"},
-  {Source: "gspt", nativeID: "Edison Farm solar project"},
-  {Source: "gspt", nativeID: "French Road Solar II"},
-  {Source: "gspt", nativeID: "MD - CS - BGE - PR24 TPE solar farm"},
-  {Source: "gspt", nativeID: "Pretzel CSG solar farm"},
-  {Source: "gspt", nativeID: "Route 19 1 Community Solar Farm"},
-  {Source: "gspt", nativeID: "Route 19 2 Community Solar Farm"},
-  {Source: "gspt", nativeID: "USS Sycamore Solar"},
-  {Source: "gspt", nativeID: "Woodfields Solar"},
-  {Source: "gspt", nativeID: "Bourne MA - Holliston I solar farm"},
-  {Source: "gspt", nativeID: "Gloucester Community College Solar"},
-  {Source: "gspt", nativeID: "South Sioux City Solar"},
-  {Source: "gspt", nativeID: "GSPP Raynham TMLP CSG solar farm"},
-  {Source: "gspt", nativeID: "Troup RC50 solar farm"},
-  {Source: "gspt", nativeID: "Wilkinson DeFore solar farm"},
-  {Source: "gspt", nativeID: "DGS Wasco State Prison solar farm"},
-  {Source: "gspt", nativeID: "CSP Los Angeles solar farm"},
-  {Source: "gspt", nativeID: "Colleton Solar Farm"},
-  {Source: "gspt", nativeID: "Halifax Solar"},
-  {Source: "gspt", nativeID: "Mustang (Oklahoma) solar farm"},
-  {Source: "gspt", nativeID: "Rising Paper solar farm"},
-  {Source: "gspt", nativeID: "Scandia Community Solar Garden"},
-  {Source: "gspt", nativeID: "Easthampton CSG solar farm"},
-  {Source: "gspt", nativeID: "SSI West Riverside Landfill solar farm"},
-  {Source: "gspt", nativeID: "Charlemont A solar farm"},
-  {Source: "gspt", nativeID: "Mt Hope Solar"},
-  {Source: "gspt", nativeID: "Carnes Creek (CSG) Solar"},
-  {Source: "gspt", nativeID: "433 Purchase Solar NG"},
-  {Source: "gspt", nativeID: "Acushnet- High Hill solar farm"},
-  {Source: "gspt", nativeID: "Macon Solar Power Project"},
-  {Source: "gspt", nativeID: "Elm Street solar farm"},
-  {Source: "gspt", nativeID: "CA - Fresno County - Juvenile Hall solar farm"},
-  {Source: "gspt", nativeID: "Prescott Airport solar farm"},
-  {Source: "gspt", nativeID: "Actus Lend Lease DMAFB solar farm"},
-  {Source: "gspt", nativeID: "Adams Farm Solar"},
-  {Source: "gspt", nativeID: "Franklin 1 solar farm"},
-  {Source: "gspt", nativeID: "Franklin 2 solar farm"},
-  {Source: "gspt", nativeID: "Hunt Farm Solar"},
-  {Source: "gspt", nativeID: "Southbridge PV solar farm"},
-  {Source: "gspt", nativeID: "Kenneth Solar"},
-  {Source: "gspt", nativeID: "Red Hill Solar Center"},
-  {Source: "gspt", nativeID: "Eagle Solar"},
-  {Source: "gspt", nativeID: "Quichapa 1 solar farm"},
-  {Source: "gspt", nativeID: "US-TOPCO Soccer Center solar farm"},
-  {Source: "gspt", nativeID: "BWC Wading River One Two Three CSG solar farm"},
-  {Source: "gspt", nativeID: "DG Haverhill CSG solar farm"},
-  {Source: "gspt", nativeID: "Haywood Solar"},
-  {Source: "gspt", nativeID: "Hinton solar farm"},
-  {Source: "gspt", nativeID: "Montana Solar Facility"},
-  {Source: "gspt", nativeID: "Porter Way Community Solar Garden"},
-  {Source: "gspt", nativeID: "Shrewsbury solar farm"},
-  {Source: "gspt", nativeID: "1047 Little Mountain Solar"},
-  {Source: "gspt", nativeID: "Fort Indiantown Gap solar farm"},
-  {Source: "gspt", nativeID: "Nautilus Winsted Solar CSG"},
-  {Source: "gspt", nativeID: "Franklin Milliken solar farm"},
-  {Source: "gspt", nativeID: "Greene Durham solar farm"},
-  {Source: "gspt", nativeID: "Meriwether Jackson solar farm"},
-  {Source: "gspt", nativeID: "Valencia 2 solar farm"},
-  {Source: "gspt", nativeID: "Wilkinson DeFore solar project"},
-  {Source: "gspt", nativeID: "3104 Batavia Solar"},
-  {Source: "gspt", nativeID: "Barron Solar Array"},
-  {Source: "gspt", nativeID: "Granby Solar CSG"},
-  {Source: "gspt", nativeID: "MilfordSolar OR"},
-  {Source: "gspt", nativeID: "NMSU Solar and Storage"},
-  {Source: "gspt", nativeID: "SulusSolar22"},
-  {Source: "gspt", nativeID: "Putah Creek Solar Farm North"},
-  {Source: "gspt", nativeID: "Sealed Air Madera Solar Project"},
-  {Source: "gspt", nativeID: "Tolland Solar NG"},
-  {Source: "gspt", nativeID: "VA Sepulveda Ambulatory Care Center solar farm"},
-  {Source: "gspt", nativeID: "Soul City Solar"},
-  {Source: "gspt", nativeID: "Yadkinville Solar"},
-  {Source: "gspt", nativeID: "Bird Machine Solar Farm"},
-  {Source: "gspt", nativeID: "City of Lexington solar farm"},
-  {Source: "gspt", nativeID: "Sacramento Regional County Sanitation PV solar farm"},
-  {Source: "gspt", nativeID: "Acton solar farm"},
-  {Source: "gspt", nativeID: "BWC Maces Pond solar farm"},
-  {Source: "gspt", nativeID: "Raboth - Marion Drive solar farm"},
-  {Source: "gspt", nativeID: "Burlington Solar 1"},
-  {Source: "gspt", nativeID: "Wonderful Kings solar project"},
-  {Source: "gspt", nativeID: "North Kern State Prison Phase II solar farm"},
-  {Source: "gspt", nativeID: "Charlton Solar I CSG"},
-  {Source: "gspt", nativeID: "Harwich Landfill solar farm"},
-  {Source: "gspt", nativeID: "Carol Jean Solar"},
-  {Source: "gspt", nativeID: "Solean Solar Project"},
-  {Source: "gspt", nativeID: "Redbrook Community Solar 1"},
-  {Source: "gspt", nativeID: "Bar D solar farm"},
-  {Source: "gspt", nativeID: "Staunton solar farm"},
-  {Source: "gspt", nativeID: "Brick Church Solar"},
-  {Source: "gspt", nativeID: "GSPP Boxborough Littleton MA solar farm"},
-  {Source: "gspt", nativeID: "Off Airport Road - West solar farm"},
-  {Source: "gspt", nativeID: "Springfield Solar PV"},
-  {Source: "gspt", nativeID: "NASA Wallops Flight Facility Solar"},
-  {Source: "gspt", nativeID: "Butler Solar"},
-  {Source: "gspt", nativeID: "Hartland Solar"},
-  {Source: "gspt", nativeID: "ZPD-PT Solar Project 2017-006 Hybrid"},
-  {Source: "gspt", nativeID: "DSM Solar"},
-  {Source: "gspt", nativeID: "Lepomis PV Energy solar farm"},
-  {Source: "gspt", nativeID: "East Orange Solar"},
-  {Source: "gspt", nativeID: "CSU Long Beach Lots 7 & 14 solar project"},
-  {Source: "gspt", nativeID: "Bladenboro Solar 2"},
-  {Source: "gspt", nativeID: "UC Merced Solar Hybrid"},
-  {Source: "gspt", nativeID: "Lady Slipper Solar Array CSG"},
-  {Source: "gspt", nativeID: "Scotch Bonnet Solar"},
-  {Source: "gspt", nativeID: "Milo CSG solar project"},
-  {Source: "gspt", nativeID: "University of the Pacific solar farm"},
-  {Source: "gspt", nativeID: "North Carolina Solar III"},
-  {Source: "gspt", nativeID: "Chauncey Farm solar farm"},
-  {Source: "gspt", nativeID: "Red Wing Community Solar"},
-  {Source: "gspt", nativeID: "Haywood Farm Solar"},
-  {Source: "gspt", nativeID: "Hood Farm Solar"},
-  {Source: "gspt", nativeID: "Bo Biggs Solar"},
-  {Source: "gspt", nativeID: "Hanover Solar"},
-  {Source: "gspt", nativeID: "Swansboro Solar"},
-  {Source: "gspt", nativeID: "Flatwood Farm solar farm"},
-  {Source: "gspt", nativeID: "Saint Albans Solar"},
-  {Source: "gspt", nativeID: "AGA TAG Solar IV"},
-  {Source: "gspt", nativeID: "1045 Tomlin Mill Solar"},
-  {Source: "gspt", nativeID: "Harmony Solar"},
-  {Source: "gspt", nativeID: "Pamlico Partners Solar"},
-  {Source: "gspt", nativeID: "Washington Millfield Solar"},
-  {Source: "gspt", nativeID: "Somers Solar Center"},
-  {Source: "gspt", nativeID: "Wilson Farm 1 solar farm"},
-  {Source: "gspt", nativeID: "Albemarle Solar Center"},
-  {Source: "gspt", nativeID: "Beth solar farm"},
-  {Source: "gspt", nativeID: "Choco Solar"},
-  {Source: "gspt", nativeID: "Bay Branch Solar"},
-  {Source: "gspt", nativeID: "Eastover Farm solar farm"},
-  {Source: "gspt", nativeID: "Shaffer solar farm"},
-  {Source: "gspt", nativeID: "Soluga Farms 2 solar farm"},
-  {Source: "gspt", nativeID: "BRE solar farm"},
-  {Source: "gspt", nativeID: "BRE NC Solar 3"},
-  {Source: "gspt", nativeID: "Cedar Solar"},
-  {Source: "gspt", nativeID: "Elm Solar"},
-  {Source: "gspt", nativeID: "Fisher Solar Farm - NC"},
-  {Source: "gspt", nativeID: "Foxfire Solar Farm"},
-  {Source: "gspt", nativeID: "Harrell's Hill Solar Center"},
-  {Source: "gspt", nativeID: "Laurinburg Farm solar farm"},
-  {Source: "gspt", nativeID: "Morgan Farm solar farm"},
-  {Source: "gspt", nativeID: "Nitro Solar"},
-  {Source: "gspt", nativeID: "SoINCPower5 solar farm"},
-  {Source: "gspt", nativeID: "SoINCPower6 solar farm"},
-  {Source: "gspt", nativeID: "Stagecoach Solar"},
-  {Source: "gspt", nativeID: "Windsor Cooper HIill Solar"},
-  {Source: "gspt", nativeID: "GMP Solar - Williamstown"},
-  {Source: "gspt", nativeID: "Green Farm solar farm"},
-  {Source: "gspt", nativeID: "Flat Meeks PV 1 solar farm"},
-  {Source: "gspt", nativeID: "Hertford Solar Farm"},
-  {Source: "gspt", nativeID: "Lang Solar Farm"},
-  {Source: "gspt", nativeID: "Mills Anson Farm solar farm"},
-  {Source: "gspt", nativeID: "Old Wire Farm solar farm"},
-  {Source: "gspt", nativeID: "Red Oak Solar Farm"},
-  {Source: "gspt", nativeID: "Fern Solar"},
-  {Source: "gspt", nativeID: "River Road Solar"},
-  {Source: "gspt", nativeID: "Sonne One solar farm"},
-  {Source: "gspt", nativeID: "Tripple State Farm solar farm"},
-  {Source: "gspt", nativeID: "Vance Solar Farm"},
-  {Source: "gspt", nativeID: "Woodland Solar"},
-  {Source: "gspt", nativeID: "Big Lake Holdco Solar CSG"},
-  {Source: "gspt", nativeID: "Arthur Solar"},
-  {Source: "gspt", nativeID: "Dundas Solar Holdings CSG"},
-  {Source: "gspt", nativeID: "Lane Solar"},
-  {Source: "gspt", nativeID: "Sadiebrook NC Solar"},
-  {Source: "gspt", nativeID: "WrightSun CSG solar farm"},
-  {Source: "gspt", nativeID: "Badger solar farm"},
-  {Source: "gspt", nativeID: "Ennis Solar"},
-  {Source: "gspt", nativeID: "Meridian II solar farm"},
-  {Source: "gspt", nativeID: "Organ Church Solar"},
-  {Source: "gspt", nativeID: "West Street Solar 1"},
-  {Source: "gspt", nativeID: "Cash Solar"},
-  {Source: "gspt", nativeID: "Eros Solar"},
-  {Source: "gspt", nativeID: "Hamlin Solar 1"},
-  {Source: "gspt", nativeID: "Jester Solar"},
-  {Source: "gspt", nativeID: "LR Wheatfield Solar 1"},
-  {Source: "gspt", nativeID: "Owlville Creek Solar"},
-  {Source: "gspt", nativeID: "Pendleton Solar 1"},
-  {Source: "gspt", nativeID: "Tate Solar"},
-  {Source: "gspt", nativeID: "Ventura (Sol Systems) Solar"},
-  {Source: "gspt", nativeID: "Woodland Avenue Solar 1"},
-  {Source: "gspt", nativeID: "160 Tihonet Rd Hybrid CSG solar farm"},
-  {Source: "gspt", nativeID: "Blacksmith Road Solar 1"},
-  {Source: "gspt", nativeID: "Blodgett Solar CSG"},
-  {Source: "gspt", nativeID: "Canoga Solar"},
-  {Source: "gspt", nativeID: "Carolina Lily Solar"},
-  {Source: "gspt", nativeID: "Grissom (North Carolina) solar farm"},
-  {Source: "gspt", nativeID: "Henrietta Solar"},
-  {Source: "gspt", nativeID: "Plott Hound Solar"},
-  {Source: "gspt", nativeID: "Ray Wilson Solar"},
-  {Source: "gspt", nativeID: "Wonderful Orchards - Westside solar farm"},
-  {Source: "gspt", nativeID: "ZPD-PT Solar Project 2017-038 Hybrid"},
-  {Source: "gspt", nativeID: "Baldwin (Maine) solar farm"},
-  {Source: "gspt", nativeID: "Cafferty Hill Solar"},
-  {Source: "gspt", nativeID: "Camas Solar Project"},
-  {Source: "gspt", nativeID: "French King Solar LLC"},
-  {Source: "gspt", nativeID: "Green Lakes Solar"},
-  {Source: "gspt", nativeID: "Judd Road Solar"},
-  {Source: "gspt", nativeID: "Polk Farm solar project"},
-  {Source: "gspt", nativeID: "River Road solar farm"},
-  {Source: "gspt", nativeID: "Union Springs 40 solar farm"},
-  {Source: "gspt", nativeID: "Omtanke Solar"},
-  {Source: "gspt", nativeID: "CM10 solar farm"},
-  {Source: "gspt", nativeID: "Space Coast Next Gen Solar Energy"},
-  {Source: "gspt", nativeID: "RE Columbia 3 solar farm"},
-  {Source: "gspt", nativeID: "Rio Communities Solar Energy Center"},
-  {Source: "gspt", nativeID: "Wilson Solar Farm 6"},
-  {Source: "gspt", nativeID: "Duus Solar"},
-  {Source: "gspt", nativeID: "Firwood Solar"},
-  {Source: "gspt", nativeID: "Fort Rock IV solar farm"},
-  {Source: "gspt", nativeID: "Rock Garden Solar"},
-  {Source: "gspt", nativeID: "OR Solar 2"},
-  {Source: "gspt", nativeID: "Yemassee Solar"},
-  {Source: "gspt", nativeID: "Whitetail (South Carolina) solar farm"},
-  {Source: "gspt", nativeID: "Bishopville Solar II, LLC"},
-  {Source: "gspt", nativeID: "Pumpjack Solar I"},
-  {Source: "gspt", nativeID: "Seville solar farm"},
-  {Source: "gspt", nativeID: "Elk Hill Solar"},
-  {Source: "gspt", nativeID: "Pinson solar farm"},
-  {Source: "gspt", nativeID: "Depue Holdings solar farm"},
-  {Source: "gspt", nativeID: "Morven solar farm"},
-  {Source: "gspt", nativeID: "Sadler Solar"},
-  {Source: "gspt", nativeID: "West Line Solar"},
-  {Source: "GPPDB", nativeID: "Syncarpha Freetown"},
-  {Source: "GPPDB", nativeID: "Buckthorn Westex"},
-  {Source: "GPPDB", nativeID: "Montague Site 36-Grosolar"},
-  {Source: "GPPDB", nativeID: "Pioneer Trail Solar Energy Center"},
-  {Source: "GPPDB", nativeID: "Sutter Greenworks LLC"},
-  {Source: "LBNLUSS", nativeID: "Dartmouth Solar"},
-  {Source: "LBNLUSS", nativeID: "Springerville Generating Station Solar System Phase 1-3 (Ph3: White Mountain Solar )"},
-  {Source: "LBNLUSS", nativeID: "Lumberton Solar"},
-  {Source: "LBNLUSS", nativeID: "Bartow Solar Energy"},
-  {Source: "LBNLUSS", nativeID: "C&B Graham Energy, LLC"},
-  {Source: "LBNLUSS", nativeID: "Berrenda Mesa Water District"},
-  {Source: "LBNLUSS", nativeID: "Silver Lake Solar WI, LLC"},
-  {Source: "LBNLUSS", nativeID: "Spring Prairie Solar WI, LLC"},
-  {Source: "LBNLUSS", nativeID: "Lightfoot Solar, LLC"},
-  {Source: "LBNLUSS", nativeID: "CS WIND America Inc."},
-  {Source: "LBNLUSS", nativeID: "Apple Grove Solar, LLC"},
-  {Source: "LBNLUSS", nativeID: "Cement City Solar, LLC"},
-  {Source: "LBNLUSS", nativeID: "Lyons Solar"},
-  {Source: "LBNLUSS", nativeID: "Shipsterns Solar, LLC"},
-  {Source: "LBNLUSS", nativeID: "Timber Road Solar Park"},
-  {Source: "LBNLUSS", nativeID: "Albany Solar (WI)"},
-  {Source: "PVDAQ", nativeID: "Campbell Scientific Headquarters - 2-Axis Tracker"},
-  {Source: "gspt", nativeID: "White River Solar 2"},
-  {Source: "gspt", nativeID: "White River Solar"},
-  {Source: "gspt", nativeID: "Labish Solar"},
-  {Source: "gspt", nativeID: "NorWest Energy 4 solar farm"},
-  {Source: "gspt", nativeID: "Whitetail Solar"},
-  {Source: "gspt", nativeID: "Badger Hollow solar farm"},
-  {Source: "gspt", nativeID: "Twin Rivers Solar Power Plant"},
-  {Source: "gspt", nativeID: "Enter Solar"},
-  {Source: "gspt", nativeID: "Clay County Electrical Cooperative solar project"},
-  {Source: "gspt", nativeID: "Prawer Project CSG solar farm"},
-  {Source: "gspt", nativeID: "Flodquist Community Solar CSG"},
-  {Source: "gspt", nativeID: "USS Rosebud Solar"},
-  {Source: "LBNLUSS", nativeID: "Five Points Solar Station"},
-  {Source: "LBNLUSS", nativeID: "Prescott Solar Plant (SunE AZ1 - Prescott)"},
-  {Source: "LBNLUSS", nativeID: "California Valley Solar Ranch  (CVSR, High Plains Ranch II)"},
-  {Source: "LBNLUSS", nativeID: "Naval Air Weapons Station China Lake"},
-  {Source: "LBNLUSS", nativeID: "SunE CPS3 - Somerset Solar Farm"}, 
-  {Source: "LBNLUSS", nativeID: "Campo Verde"}, 
-  {Source: "LBNLUSS", nativeID: "Indy Solar III"},
-  {Source: "LBNLUSS", nativeID: "Dalton phase 3 (Dalton 2 in EIA) (Looper Bridge Solar Facility in Ventyx)"},
-  {Source: "LBNLUSS", nativeID: "Desert Green Solar Farm"},
-  {Source: "LBNLUSS", nativeID: "Cibola Solar Energy Center"},
-  {Source: "LBNLUSS", nativeID: "Tequesquite Landfill Solar PV Project (RPU Project, SSC 31)"},
-  {Source: "LBNLUSS", nativeID: "Howell Solar"},
-  {Source: "LBNLUSS", nativeID: "Pfizer Peapack Solar"},
-  {Source: "LBNLUSS", nativeID: "Solar Glynn"},
-  {Source: "LBNLUSS", nativeID: "Williamston Speight Solar"},
-  {Source: "LBNLUSS", nativeID: "Spartan"},
-  {Source: "LBNLUSS", nativeID: "Adams Nielson Solar"}, 
-  {Source: "LBNLUSS", nativeID: "City of Gallup Solar"},  
-  {Source: "LBNLUSS", nativeID: "Ellis Solar (North+South)"},
-  {Source: "LBNLUSS", nativeID: "KDC Solar PR1 (Six Flags Adventure Solar)"}, 
-  {Source: "LBNLUSS", nativeID: "Tungsten Mountain"}, 
-  {Source: "LBNLUSS", nativeID: "Holstein 1 Solar Farm"}, 
-  {Source: "LBNLUSS", nativeID: "Tanglewood Solar (OE_GA3)"}, 
-  {Source: "LBNLUSS", nativeID: "Turquoise Nevada (Turquoise 2)"}, 
-  {Source: "LBNLUSS", nativeID: "Electric City Solar"}, 
-  {Source: "LBNLUSS", nativeID: "Midway Green Solar"}, 
-  {Source: "LBNLUSS", nativeID: "Troupsburg"},  
-  {Source: "LBNLUSS", nativeID: "Briar Creek Solar 1"},
-  {Source: "LBNLUSS", nativeID: "Corazon Energy"}, 
-  {Source: "LBNLUSS", nativeID: "(City of) Corcoran Solar (formerly Cottonwood 2)"}, 
-  {Source: "LBNLUSS", nativeID: "CID Solar"}, 
-  {Source: "LBNLUSS", nativeID: "Davis-Monthan Air Force Base Phase I+II"},
-  {Source: "LBNLUSS", nativeID: "Raptor Ridge"},
-  {Source: "LBNLUSS", nativeID: "Valencia Solar"},
-  {Source: "LBNLUSS", nativeID: "Holland Solar Farm"},
-  {Source: "LBNLUSS", nativeID: "Milford Solar Farm (NJ)"},
-  {Source: "LBNLUSS", nativeID: "276 Federal Rd(CSG)"},
-  {Source: "LBNLUSS", nativeID: "0 Hammond St CSG"},
-  {Source: "gspt", nativeID: "Stafford St Solar 3 CSG"},
-  {Source: "gspt", nativeID: "Stafford St 2 Community Solar"},
-  {Source: "gspt", nativeID: "Stafford St Solar 1 CSG"},
-  {Source: "gspt", nativeID: "Old Wardour Solar"},
-  {Source: "gspt", nativeID: "Vuelta Solar"}, 
-  {Source: "gspt", nativeID: "MCRD Parris Island PV Hybrid solar farm"}, 
-  {Source: "gspt", nativeID: "Broadway 3 - Tucson Phase I solar farm"},
-  {Source: "gspt", nativeID: "Broadway 2 - Tucson Phase II solar farm"},
-  {Source: "LBNLUSS", nativeID: "Richland Solar Center"}, 
-  {Source: "LBNLUSS", nativeID: "Olive Solar Power Project"}, 
-  {Source: "LBNLUSS", nativeID: "Longboat Solar"},
-  {Source: "LBNLUSS", nativeID: "Caprock Solar 1"}, 
-  {Source: "LBNLUSS", nativeID: "ANAD Solar Array (Army) (Anniston)"},
-  {Source: "LBNLUSS", nativeID: "Wilson Solar Farm 3"},
-  {Source: "LBNLUSS", nativeID: "Wilson Solar Farm 4"}, 
-  {Source: "LBNLUSS", nativeID: "Wilson Solar Farm 7"},
-  {Source: "LBNLUSS", nativeID: "Amazon Solar Farm US East 3 (Correctional Solar)"},
-  {Source: "LBNLUSS", nativeID: "Richmond 6"},
-  {Source: "gspt", nativeID: "Jackpot Solar"},
-  {Source: "gspt", nativeID: "Athos Solar"},
-  {Source: "gspt", nativeID: "Broadway 3 - UC Merced 1 solar farm"},
-  {Source: "gspt", nativeID: "115 G Fisher solar farm"},
-  {Source: "gspt", nativeID: "154 D Fisher solar farm"},
-  {Source: "gspt", nativeID: "National Raisin solar farm"},
-  {Source: "gspt", nativeID: "Onset East Community Solar Facility"},
-  {Source: "gspt", nativeID: "Betcher CSG 1 solar farm"},
-  {Source: "gspt", nativeID: "Betcher Community Solar Garden"},
-  {Source: "gspt", nativeID: "Wyoming 2 CSG solar farm"},
-  {Source: "gspt", nativeID: "Brockelman Road Solar 2"},
-  {Source: "gspt", nativeID: "Wachusett Solar"},
-  {Source: "gspt", nativeID: "Brentwood Solar"},
-  {Source: "gspt", nativeID: "Westport MA 2 Community Solar"},
-  {Source: "gspt", nativeID: "Westport MA 1 Community Solar"},
-  {Source: "gspt", nativeID: "Manheim New Jersey solar farm"},
-  {Source: "gspt", nativeID: "COU Solar I"},
-  {Source: "gspt", nativeID: "P52ES 1755 Henryton Rd Phase 2 solar farm"},
-  {Source: "gspt", nativeID: "CJ Solar I"},
-  {Source: "gspt", nativeID: "Mohawk View Solar"},
-  {Source: "gspt", nativeID: "North Eagle Village Solar"},
-  {Source: "gspt", nativeID: "Union Springs 963 solar farm"},
-  {Source: "gspt", nativeID: "Alamo (Texas) solar farm"},
-  {Source: "gspt", nativeID: "Penstemon Solar Project"},
-  
-];
+// Print total new array area (digitized, georeferenced, and discovered)
+print("New array area (all): ", nonIntersectingArea.add(nonIntersectingDiscoveredArea), 'km2');
 
+//#################################\\
+//  Export all featureCollections  \\
+//#################################\\
 
+// Function to export newly digitized and georeferenced arrays to asset
+var exportAsset = function(asset, name, folder){
+ Export.table.toAsset({
+   collection: asset, 
+   description: "ExportAll_"+name, 
+   assetId: folder+name+"_all", 
+   maxVertices: 1e9, 
+ });
+};
+ 
+// Export compiled assets
+exportAsset(digGeoref, "newDigGeoRef_v2", "BigPanel/v1_1/");
+exportAsset(newArrays, "newArrays_v2", "BigPanel/v1_1/");
+exportAsset(dupPolys, "duplicatePolys_v2", "BigPanel/v1_1/");
+*/
+
+// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ Lists of Source+nativeID of points to remove from existing point datasets (through quality selection)
+// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 // Set list of nativeID's where no panels exist in imagery. Take notes for each
 var noPanelsPresent = [
@@ -1569,9 +567,28 @@ var noPanelsPresent = [
   {Source: "LBNLUSS", nativeID: "SR Snipesville III"}, 
 ];
 
-// Set a list for new solar arrays that do not exist in available datasets
-var newIDs = [
-  {Source: "sourceExample", nativeID: "nativeIDexample"},
+// Set list of nativeID's where no panels exist in imagery for InSPIRE dataset. Note, this is separate because we performed this dig+georef in version 1.0. 
+var noPanelsPresentInSPIRE = [
+  {Source: 'InSPIRE', nativeID: 'California: Habitat & Wildlife Monitoring'},
+  {Source: 'InSPIRE', nativeID: 'SoliCulture Greenhouse'},
+  {Source: 'InSPIRE', nativeID: 'Haywood Solar Farm'},
+  {Source: 'InSPIRE', nativeID: 'Saffron in Vermont'},
+  {Source: 'InSPIRE', nativeID: 'CSU Spur Campus - Rooftop Agrivoltaics'},
+  {Source: 'InSPIRE', nativeID: 'LeGore Bridge Solar Center'},
+  {Source: 'InSPIRE', nativeID: 'Summit Plant Labs'},
+  {Source: 'InSPIRE', nativeID: 'Sunzaun Somerset Winery'},
+  {Source: 'InSPIRE', nativeID: 'Joe Czajkowski Farm'},
+  {Source: 'InSPIRE', nativeID: 'USDA-UGA AgSolar Synergy'},
+  {Source: 'InSPIRE', nativeID: 'Growing Green - Spaces of Opportunity'},
+  {Source: 'InSPIRE', nativeID: 'CSU Foothills Campus - Rooftop Agrivoltaics Research'},
+  {Source: 'InSPIRE', nativeID: 'Abel'},
+  {Source: 'InSPIRE', nativeID: 'Bunker Hill'},
+  {Source: 'InSPIRE', nativeID: 'Giveback- Salsola mowing'},
+  {Source: 'InSPIRE', nativeID: 'Goodrich Solar'},
+  {Source: 'InSPIRE', nativeID: 'USS Peach'},
+  {Source: 'InSPIRE', nativeID: 'Foxhound Solar'},
+  {Source: 'InSPIRE', nativeID: 'Temple University Ambler Campus'},
+  {Source: 'InSPIRE', nativeID: 'Putnam Solar'}
 ];
 
 // Set list for exisiting solar arrays that are rooftop arrays
@@ -1628,41 +645,7 @@ var rooftopIDs = [
   {Source: "OSM", nativeID: "1207"},
   {Source: "SAM", nativeID: "35928_0"},
   {Source: "OSM", nativeID: "10499"},
-  
-  
-  
 ];
-
-// Set list for nativeIDs that need to be revisted mannually with notes describing issues
-var skipIDs = [
-  {Source: "sourceExample", nativeID: "nativeIDexample"}, 
-  
-];
-
-
-//___________________________________________________________________________________________________________________________________________________________________________________ Old Lists
-//
-
-// Set list for exisiting solar arrays that are rooftop arrays
-var rooftopIDsOLD = [
-  '802', // Rooftop array 
-  '64928_0', // Rooftop array
-  '18876_1', // Rooftop array
-  '18876_0', // Rooftop array
-  '30234_0', // Rooftop array
-  '1196', // Rooftop array
-  '68395_0', // Rooftop array
-  '73900_0', // Rooftop array
-  '2741', //Rooftop array
-  '7358_0', //Rooftop array
-  '12796_0', //Rooftop array
-  '12796_1', //Rooftop array
-  '63250_0', //Rooftop array
-];
-
-//##################################\\
-// Prepare lists and filter dataset \\
-//##################################\\
 
 // Function to combine Source and nativeID in main to digitize dataset
 var arraysToDigitize = arraysToDigitize.map(function(f) {
@@ -1678,89 +661,130 @@ function buildSourceNativeIDList(dictList) {
 }
 
 // Create the exclusion lists by merging Source and nativeID dictionaries
-var digitizedIDs_prep = buildSourceNativeIDList(digitizedIDs)
-var noPanelsPresent_prep = buildSourceNativeIDList(noPanelsPresent)
-var newIDs_prep = buildSourceNativeIDList(newIDs)
-var rooftopIDs_prep = buildSourceNativeIDList(rooftopIDs)
-var skipIDs_prep = buildSourceNativeIDList(skipIDs)
+var noPanelsPresent_prep = buildSourceNativeIDList(noPanelsPresent);
+var noPanelsPresentInSPIRE_prep = buildSourceNativeIDList(noPanelsPresentInSPIRE);
+var rooftopIDs_prep = buildSourceNativeIDList(rooftopIDs);
 
 // Filter arraysToDigitize to exclude those in the lists above
 var arraysRemaining = arraysToDigitize
-  .filter(ee.Filter.inList("SourceNativeID", digitizedIDs_prep).not())
   .filter(ee.Filter.inList("SourceNativeID", noPanelsPresent_prep).not())
-  .filter(ee.Filter.inList("SourceNativeID", newIDs_prep).not())
-  .filter(ee.Filter.inList("SourceNativeID", rooftopIDs_prep).not())
-  .filter(ee.Filter.inList("SourceNativeID", skipIDs_prep).not())
-
-//###############################################\\
-// Call, Process, and Display Imagery and Arrays \\ ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-//###############################################\\
-
-/*
-// Select current array to digitize. Get a buffer for clipping imagery. Print details. 
-var currentArray = ee.Feature(arraysRemaining.first()); 
-var currentBuffer = currentArray.geometry().buffer(10000); // 10km
-print("Source: "+currentArray.get("Source").getInfo());
-print("Installation Year: "+currentArray.get("instYr").getInfo());
-print("nativeID: "+currentArray.get("nativeID").getInfo());
-print("Capacity: "+currentArray.get("cap_mw").getInfo());
-
-// Print number of arrays remaining
-print("Arrays remaining: "+arraysRemaining.size().getInfo());
-print(currentArray);
-
-// Call in NAIP, Landsat and Sentinel-2 and clip by array buffered boundary for efficiency
-var naip = getMostRecentImageNAIP(NAIP.filterDate(NAIPstart+'-1-01', NAIPend+'-12-31').filterBounds(currentBuffer));
-var ls = LS.filterDate(SATstart+'-5-01', SATend+'-10-31').map(LSfmask).map(applyLS_ScaleFactors).mean().select("SR_B4", "SR_B3", "SR_B2").clip(currentBuffer); 
-var s2 = S2.filterDate(SATstart+'-5-01', SATend+'-10-31').filter(ee.Filter.lt('CLOUDY_PIXEL_PERCENTAGE',10)).map(maskS2clouds).mean().select("B4", "B3", "B2").clip(currentBuffer); 
-
-// Add newly generated duplicate polygons to map for visualization. 
-// For modification, going to have to re-add them to the import record individually, but can modify metadata in the script. 
-var duplicatePolys = ee.FeatureCollection([Dup16,Dup17,Dup18,Dup19,Dup20,Dup21,Dup22,Dup23,Dup24,Dup25,Dup26,Dup27,Dup28]); 
-
-// Center on array and visualize
-Map.centerObject(currentArray, 15);
-Map.addLayer(naip, {}, "NAIP", false);
-Map.addLayer(ls, {min: 0, max:0.3}, "Landsat", false);
-Map.addLayer(s2, {min: 0, max:0.3}, "Sentinel-2", false);
-Map.addLayer(existingArrays, {}, "Existing Arrays", true);
-Map.addLayer(digGeoref.filterBounds(currentBuffer), {color: "blue"}, "Already digitized arrays", true); 
-Map.addLayer(newArrays.filterBounds(currentBuffer), {color: "blue"}, "Already digitized new arryas", true); 
-Map.addLayer(dupPolys, {color: 'yellow'}, 'Duplicate Polygons: Array Metadata Copied', true);
-Map.addLayer(arraysToDigitize, {}, "Arrays to Digitize", true); 
-Map.addLayer(currentArray, {}, "Current Array to Ditigize", true);
-*/
-
-// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ EXPORT
-
-/*
-// Function to export newly digitized and georeferenced arrays to asset
-var exportAsset = function(asset, name, scriptIter){
- Export.table.toAsset({
-   collection: asset, 
-   description: "Export_"+name+"_"+scriptIter, 
-   assetId: name+"_asset_"+scriptIter, 
-   maxVertices: 1e9, 
- });
-};
- 
-// Export assets (once vertex limit is reached) -- then, save and start new script and add these as assets
-exportAsset(newDigGeoRef_v2, "newDigGeoRef_v2", "2");
-exportAsset(newArrays_v2, "newArrays_v2", "2");
-exportAsset(duplicatePolys, "duplicatePolys_v2", "2");
-
-// Add USWTDB if using wind as a reference
-//var USWTDB = ee.FeatureCollection('users/stidjaco/uswtdb_v6_1_20231128'); Map.addLayer(USWTDB, {}, 'USWTDB', false)
-*/
+  .filter(ee.Filter.inList("SourceNativeID", noPanelsPresentInSPIRE_prep).not())
+  .filter(ee.Filter.inList("SourceNativeID", rooftopIDs_prep).not());
 
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ PART 2
+// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ Compile and Export
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 /*
-// If you need to compare lists, manually check lists, select for erroneously digitized arrays
-var existingDig = arraysToDigitize.aggregate_array('nativeID').sort(); print(existingDig)
-var digLists = ee.List(digitizedIDs).cat(noPanelsPresent).sort(); print(digLists);
-var digToRemove = digLists.filter(ee.Filter.inList('item', existingDig).not()); print(digToRemove);
-var checkDigID = "Winona II"; var checkDigArray = allPoints.filter(ee.Filter.eq("nativeID", checkDigID)); Map.addLayer(checkDigArray); Map.centerObject(checkDigArray); Map.addLayer(existingArrays, {}, "Existing Arrays", true)
+Notes: 
+Goal Output: Digitized and existing georef with most complete metadata possible. 
+The order of copying is critical, since the functions check for the existence of 
+metadata before copying.
 */
+
+///*
+//################################################################\\
+// Merge and Copy toDigitize Attributes to New and Existing Geoms \\ ~~~~~~~~~~~~~~~~~~~~ By state
+//################################################################\\
+
+
+
+
+// Function to separate process by grid cell (in this case, state). Have to create union first to address georeferencing with overlapping states
+var exportDigGeorefByState = function(gridCellID){
+  
+  // ~~~~~~~~~~~~~~~~~~~ Prepare digitized and georefenced object subsets to address memory overload issues
+  
+  // Buffer and create a union of digitized and georeferenced objects. Then, split the unioned geometry back into individual geometries
+  var digGeorefAllUnion = createUnionFC(digGeoref); 
+  var newArraysAllUnion = createUnionFC(newArrays); 
+  var dupPolysAllUnion = createUnionFC(dupPolys); 
+  
+  // Subset digGeoref, newArrays, and dupPoly - unioned objects - by gridded id (state shorthand)
+  var gridCell = grid.filter(ee.Filter.eq(gridCellIDtag, gridCellID));
+  var digGeorefAllUnionState = digGeorefAllUnion.filterBounds(gridCell);
+  var newArraysAllUnionState = newArraysAllUnion.filterBounds(gridCell);
+  var dupPolysAllUnionState = dupPolysAllUnion.filterBounds(gridCell);
+  
+  // Now, subset original featureCollections by unioned subsets (prevents dropping of cross-border georeferenced objects) - still have to check for overlap once pull dataset together
+  var digGeorefSubset = digGeoref.filterBounds(digGeorefAllUnionState);
+  var newArraysSubset = newArrays.filterBounds(newArraysAllUnionState);
+  var dupPolysSubset = dupPolys.filterBounds(dupPolysAllUnionState);
+
+  // ~~~~~~~~~~~~~~~~~~~ Prepare points and split digitized array bounds from georeferenced line-connectors
+  
+  // Merge dupPolys with arraysToDigitze - dupPolys are the updated arraysToDigitize points to prevent self-overlap and improper metadata attribution
+  var arraysToDigitizeMerged = arraysRemaining.merge(dupPolysSubset);
+  
+  // Split digGeoref by georeferenced vs digitized objects by geometry type
+  var digGeorefType = digGeorefSubset.map(function(f){return f.set({gtype: ee.String(ee.Algorithms.If(ee.Geometry(f.geometry(geomErrorMargin)).type().compareTo('LineString'), 'Polygon', 'LineString'))})});
+  var georef = digGeorefType.filter(ee.Filter.eq("gtype", "LineString")); 
+  var dig = digGeorefType.filter(ee.Filter.eq("gtype", "Polygon")); 
+  
+  // Get existingArrays that do and do not intersect with digitized polygons (dig)
+  var digExistingArrays = existingArrays.filter(ee.Filter.intersects('.geo', dig.geometry(geomErrorMargin))); // existing arrays to remove
+  var nonDigExistingArrays = existingArrays.filter(ee.Filter.intersects('.geo', dig.geometry(geomErrorMargin)).not()).filter(ee.Filter.intersects('.geo', georef.geometry(geomErrorMargin))); // existing arrays to keep
+  
+  // ~~~~~~~~~~~~~~~~~~~ Copy metadata from merged points to newly digitized array boundaries
+  
+  // Buffer and create a union of digitized and georeferenced objects. Then, split the unioned geometry back into individual geometries and map over each geometry to convert it into a feature
+  var digGeorefUnion = createUnionFC(digGeorefType);
+  
+  // Copy metadata from points to the digGeorefUnion based on intersecting objects. Set Source as 'GMSEUSdigGeoref_version'. Then copy metadata to original dig
+  var digGeorefWithAttributesBuffered = copyAttributes(arraysToDigitizeMerged, digGeorefUnion, attList);
+  var digGeorefWithAttributes = copyAttributes(digGeorefWithAttributesBuffered, dig, attList).map(function(f){return f.set({Source: ee.String('GMSEUSdig_').cat(version)})});
+  
+  // ~~~~~~~~~~~~~~~~~~~ Copy metadata from merged points to kept existing array boundaries
+  
+  // Merge existingArrays with georeferenced line-connectors. Then, buffer and create a union of digitized and georeferenced objects. Then, split the unioned geometry back into individual geometries and features
+  var existingArraysGeoref = digExistingArrays.merge(georef);
+  var existingGeorefUnion = createUnionFC(existingArraysGeoref);
+  
+  // Copy metadata from digExistingArrays to dig based on intersecting objects. Set Source as 'GMSEUSdigGeoref_version'
+  var existingGeorefWithAttributesBuffered = copyAttributes(arraysToDigitizeMerged, existingGeorefUnion, attList);
+  var existingGeorefWithAttributes = copyAttributes(existingGeorefWithAttributesBuffered, nonDigExistingArrays, attList).map(function(f){return f.set({Source: ee.String('GMSEUSgeoref_').cat(version)})});
+  
+  // ~~~~~~~~~~~~~~~~~~~ Copy metadata from removed existing array boundaries to newly digitized array boundaries with attributes
+  
+  // Copy metadata from digExistingArrays to digGeorefWithAttributes based on intersecting objects. 
+  var digGeorefWithAttributesAll = copyAttributes(digExistingArrays, digGeorefWithAttributes, attList);
+  
+  // ~~~~~~~~~~~~~~~~~~~ Compile into a single featureCollection, validate geometries, and export
+  
+  // Merge newly digitized and georeferenced boundaries 
+  var mergedBoundariesWithAttributes = existingGeorefWithAttributes.merge(digGeorefWithAttributesAll); // Map.addLayer(mergedBoundariesWithAttributes)
+  
+  // Recalculate area and save as integer
+  var mergedBoundariesWithAttributes_OUT = mergedBoundariesWithAttributes.map(function(f){return f.set({area: f.geometry(geomErrorMargin).area(geomErrorMargin).toInt()})})
+  
+  // Build out selectors
+  var attNames  = attList.map(function(d){ return d.name; }); // ["AVtype","area",...]
+  var outSelectors = ['Source', '.geo'].concat(attNames);
+  
+  // Merge newPanelRows from current script with previous version digitizations (digGeoref)
+  Export.table.toAsset({
+    collection: mergedBoundariesWithAttributes_OUT, 
+    description: "assetExportFinalArraySHP_"+gridCellID, 
+    assetId: assetFolder+"/GMSEUS"+version+"_digGeorefArrays_"+gridCellID, 
+    maxVertices: 1e9});
+  Export.table.toDrive({
+    collection: mergedBoundariesWithAttributes_OUT,
+    description:'GMSEUS'+version+'_digGeorefArrays_'+gridCellID,
+    fileFormat: 'GeoJSON',
+    folder: date+"digGeorefArrays_"+version,
+    selectors: outSelectors});
+}; 
+
+// Create grid sequence and iterate over list
+//var gridSequence = grid.aggregate_array(gridCellIDtag).getInfo();
+var gridSequence = ['AL', 'AZ', 'AR', 'CA', 'CO', 'CT', 'DE', 'FL', 'GA', 'ID',
+                    'IL', 'IN', 'IA', 'KS', 'KY', 'LA', 'ME', 'MD', 'MA', 'MI',
+                    'MN', 'MS', 'MO', 'MT', 'NE', 'NV', 'NH', 'NJ', 'NM', 'NY',
+                    'NC', 'ND', 'OH', 'OK', 'OR', 'PA', 'RI', 'SC', 'SD', 'TN',
+                    'TX', 'UT', 'VT', 'VA', 'WA', 'WV', 'WI', 'WY', 'DC'];
+
+// Iterate across states
+gridSequence.forEach(function(cell){ 
+  exportDigGeorefByState(cell); 
+});
+//*/
