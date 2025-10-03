@@ -45,6 +45,16 @@ var allPointsID = 'projects/ee-stidjaco/assets/BigPanel/points_all';
 // Set date
 var date = '101524';
 
+// Call all digitized and georeferenced arrays from prior script iterations
+var newDigGeoRef_v2_asset0 = 'projects/ee-asterellsworth/assets/newDigGeoRef_v2_asset_0';
+var newArrays_v2_asset0 = 'projects/ee-asterellsworth/assets/newArrays_v2_asset_0';
+var newDigGeoRef_v2_asset1 = 'projects/ee-asterellsworth/assets/newDigGeoRef_v2_asset_1';
+var newArrays_v2_asset1 = 'projects/ee-asterellsworth/assets/newArrays_v2_asset_1';
+var dupPolys_v2_asset1 = 'projects/ee-asterellsworth/assets/duplicatePolys_v2_asset_1'; 
+var newDigGeoRef_v2_asset2 = 'projects/ee-asterellsworth/assets/newDigGeoRef_v2_asset_2';
+var newArrays_v2_asset2 = 'projects/ee-asterellsworth/assets/newArrays_v2_asset_2';
+var dupPolys_v2_asset2 = 'projects/ee-asterellsworth/assets/duplicatePolys_v2_asset_2'; 
+
 //######################################\\
 // Preparation and Cloud Mask Functions \\
 //######################################\\
@@ -59,6 +69,21 @@ var existingArrays = ee.FeatureCollection(existingArraysID);
 // Call the all points dataset
 var allPoints = ee.FeatureCollection(allPointsID);
 var allPoints = allPoints.filter(ee.Filter.eq("Source", "InSPIRE")); // For v1.0, we are only digitizing InSPIRE arrays as proof of concept. 
+
+// Get digitized and georeferenced arrays from previous script iterations
+var digGeoref_0 = ee.FeatureCollection(newDigGeoRef_v2_asset0);
+var newArrays_0 = ee.FeatureCollection(newArrays_v2_asset0);
+var digGeoref_1 = ee.FeatureCollection(newDigGeoRef_v2_asset1);
+var newArrays_1 = ee.FeatureCollection(newArrays_v2_asset1);
+var dupPolys_1 = ee.FeatureCollection(dupPolys_v2_asset1);
+var digGeoref_2 = ee.FeatureCollection(newDigGeoRef_v2_asset2);
+var newArrays_2 = ee.FeatureCollection(newArrays_v2_asset2);
+var dupPolys_2 = ee.FeatureCollection(dupPolys_v2_asset2);
+
+// Bring together digGeoref, newArrays, and dupPolys to map
+var digGeoref = digGeoref_0.merge(digGeoref_1).merge(digGeoref_2);
+var newArrays = newArrays_0.merge(newArrays_1).merge(newArrays_1);
+var dupPolys = dupPolys_1.merge(dupPolys_2);
 
 // Cloud masking functions sentinel
 function maskS2clouds(image) {
@@ -109,36 +134,36 @@ function applyLS_ScaleFactors(image) {
 var noPanelsPresent = [
   'California: Habitat & Wildlife Monitoring', // No apparent array, lots of parking lot and rooftop solar at US Davis
   'SoliCulture Greenhouse', // Not apparent in imagery, small possibly temp greenhouse, website: https://www.agrisolarclearinghouse.org/case-study-soliculture-research-greenhouse/
-  'RE Adams East, LLC', // Not apparent in imagery, Major solar area but all information online is behind payways: example websites: https://www.gridinfo.com/plant/re-adams-east-llc/58984, https://www.globaldata.com/store/report/re-adams-east-solar-pv-park-profile-snapshot/
   'Haywood Solar Farm', // Not apparent array in imagery, web search reveals Haywood Solar Farm at Tennessee Welcome Center nearly 20 miles away: webstie: https://www.tnvacation.com/local/stanton-i-40-haywood-county-solar-farm-welcome-center
   'Saffron in Vermont', // Not apparent in imagery, a lot of solar in vermont, also, apparently this array is in New Haven, point locaiton is iSun (Burlington) so incorrect location, webstie: https://www.uvm.edu/~saffron/info/reports/FinalreportiSunFebruary22022.pdf
   'CSU Spur Campus - Rooftop Agrivoltaics', // Present in NAIP imagery, but rooftop
   'LeGore Bridge Solar Center', // Not present in NAIP imagery, likely to commense in 2024, website: https://www.power-technology.com/data-insights/power-plant-profile-legore-bridge-solar-project-us/
-  'Pivot Solar NY 4', // Not apparent in imagery, not apparent online
-  'Pivot Solar NY 5', // Not apparent in imagery, not apparent online
   'Summit Plant Labs', // Possibly present in imagery, small vertical bifacial array, website: https://www.agrisolarclearinghouse.org/case-study-summit-plant-labs/
   'Sunzaun Somerset Winery', // Winery is km from location, small vertical bifaical array, website: https://sunzaun.com/projects/
   'Joe Czajkowski Farm', // No NAIP -- 2023, small array, not apparent in Maxar, set to be completed in 2023, website: https://www.agrisolarclearinghouse.org/case-study-joe-czajkowski-farm/
-  'Niagara University', // No NAIP, --2023, expected to be complete in summer 2024, website: https://www.wgrz.com/article/money/business/business-first/buffalo-business-first-university-solar-project-completions/71-4afafac3-f632-41e4-93d4-2f9b64250c3b
   'USDA-UGA AgSolar Synergy', // 2023, small, not apparent in imagery
   'Growing Green - Spaces of Opportunity', // 2023, small, not apparent in imagery
-  'Falls Creek Garden', // Not apparent in imagery or online
   'CSU Foothills Campus - Rooftop Agrivoltaics Research', // Present in NAIP imagery, small array, within 190m, but rooftop
   'Abel', // Likely present in NAIP imagery, likely an array to the south based on https://x.com/Interco81562188/status/1267874876901081088, but cannot confirm
   'Bunker Hill', // Likely present in NAIP imagery, likely arrays to east or west, but no web-source able to confirm
-  'Fountain', // Likely the array directly to the south under construction in 2021 imagery, no web-source to confirm
   'Giveback- Salsola mowing', // No NAIP -- 2022 (naip:2021), no existing solar to assume adjacent to centroid, little information online
   'Goodrich Solar', // No NAIP -- 2022 (naip:2021), no existing array in database, possibly undocumented array to the north east, but not enough information online, website: https://www.gem.wiki/USS_Goodrich_Solar
   'USS Peach', // Not apparent in imegery or online, several nearby arrays but not enough information to confirm
   'Foxhound Solar', // There is recently cleared forestland just south of the array, very likely the project boundary, but not able to confirm with context
   'Temple University Ambler Campus', // (2023) Not apprent in imagery, very small array, too small for Sentinel-2 imagery, 
   'Putnam Solar', // Not apparent in imagery, not apparent online
-  'Monee Solar', // (2024) Not apparent in imagery, not apparent online
 ];
  
 // Set list of nativeID's where array was digitized. Take notes for each.
 var digitizedIDs = [
+  'Monee Solar', //Present in NAIP imagery
+  'Niagara University', // Counstruction boundary Present in NAIP imagery, https://news.niagara.edu/news/show/niagara-university-powers-up-on-campus-solar-array
+  'Pivot Solar NY 4', // Present in NAIP imagery, https://der.nyserda.ny.gov/facilities/3444/?project=3301
+  'Fountain', // Construction Boundary present in NAIP imagery, https://www.openstreetmap.org/way/1163126332
+  'Falls Creek Garden', // Present in NAIP imagery
+  'RE Adams East, LLC', // Present in NAIP imagery, https://www.openstreetmap.org/way/597046168
   'Animal Farm Cook Campus', // within 2.5km buffer, non-vertical array (website indicated that there also exists a vertical animal farm array), website: https://agrivoltaics.rutgers.edu/
+  'Pivot Solar NY 5', // Present in Mazar imagery, construction boundaries present in sentinel imagery, https://dataint.s3.amazonaws.com/docs/proj_3314/database_notes-pivot_solar_ny5.pdf
   'Pivot Solar NY 6, LLC', // Present in Maxar imagery, partially built (2 of 3 sections), somewhat visible in 2023 sentinel imagery
   'Snyder Farm Pittstown', // Present in Maxar imagery, no other imagery, included space between two panel sections for ground cover, website: https://investors.solaredge.com/news-releases/news-release-details/rutgers-university-selects-solaredge-technologies-its
   'Spring Street Road II Solar Project', // Present in NAIP 2022, NAIP also taken in 2021, so had to subset for latest naip year, further than 190m, website: https://dec.ny.gov/news/environmental-notice-bulletin/2021-02-10/seqr/cayuga-county-the-village-of-union-springs-planning-board-as-lead-agency-has-determined-that-the-proposed-spring-street-road-ii-solar-project-will-not-have-a-significant-adverse-environmental-impact-the
@@ -285,6 +310,8 @@ Map.addLayer(naip, {}, "NAIP", false);
 Map.addLayer(ls, {min: 0, max:0.3}, "Landsat", false);
 Map.addLayer(s2, {min: 0, max:0.3}, "Sentinel-2", false);
 Map.addLayer(existingArrays, {}, "Existing Arrays", true)
+Map.addLayer(digGeoref.filterBounds(currentBuffer), {color: "blue"}, "Already digitized arrays", true); 
+Map.addLayer(newArrays.filterBounds(currentBuffer), {color: "blue"}, "Already digitized new arrays", true); 
 Map.addLayer(arraysToDigitize, {}, "Arrays to Digitize", true); 
 Map.addLayer(currentArray, {}, "Current Array to Ditigize", true)
 
@@ -292,107 +319,19 @@ Map.addLayer(currentArray, {}, "Current Array to Ditigize", true)
 //var USWTDB = ee.FeatureCollection('users/stidjaco/uswtdb_v6_1_20231128'); Map.addLayer(USWTDB, {}, 'USWTDB', false)
 */
 
-// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ When Finished With Digitization, uncomment
+// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ EXPORT
 
-///*
-//#####################\\
-//  Recall Solar Data  \\
-//#####################\\
-
-// Call in solar database
-var arraysToDigitize = ee.FeatureCollection(toDigitizeID); 
-var arraysToDigitize = arraysToDigitize.filter(ee.Filter.eq("Source", "InSPIRE")); // For v1.0, we are only digitizing InSPIRE arrays as proof of concept. 
-//var arraysToDigitize = arraysToDigitize.filter(ee.Filter.inList("nativeID", ['Aspiration G', 'Giffen Solar Park'])); Map.addLayer(arraysToDigitize); var newSolarArrayBounds = newSolarArrayBounds.filterBounds(arraysToDigitize.geometry().buffer(10000))
-
-// Filter newSolarArrayBounds to only include areas that do not intersect with existingArrays
-var nonIntersectingArrays = newSolarArrayBounds.filter(
-  ee.Filter.intersects('.geo', existingArrays.geometry(1)).not()
-);
-
-// Print important metrics for manuscript 
-print("Number of omitted arrays: ", ee.List(noPanelsPresent).length())
-print("Number of digitized arrays: ", ee.List(digitizedIDs).length())
-
-// Calculate the total area of non-intersecting new solar arrays (in km2)
-var nonIntersectingArea = nonIntersectingArrays.geometry(1).area(1).divide(1e6); print("New array area: ", nonIntersectingArea, 'km2');
-
-//###################################################\\
-// Merge and Copy toDigitize Attributes to New Geoms \\
-//###################################################\\
-
-// Select existingArrays that overlap with newSolarArrayBounds (contains all geometries to copy to from existing database)
-var overlappingExistingArrays = existingArrays.filterBounds(newSolarArrayBounds.geometry(1)); 
-
-// Get the union of newSolarArrayBounds with overlappingExistingArrays (contains all geometries to copy to from existing database and newly digitized boundaries)
-var unionedNewArrayBounds = overlappingExistingArrays.geometry(1).union(newSolarArrayBounds.geometry(1).buffer(0.1)); // Small buffer to create intersecting polygons from connecting lines
-
-// Split the unioned geometry back into individual geometries and map over each geometry and convert it into a feature
-var unionedNewArrayBoundsFC = ee.FeatureCollection(
-  unionedNewArrayBounds.geometries().map(function(geom) {
-    return ee.Feature(ee.Geometry(geom));  // Wrap each geometry into a Feature
-  }));
-
-// Copy attributes from arraysToDigitize to the new geometries in unionedNewArrayBoundsFC using intersection of features (requires connecting lines)
-var copiedAttributes = unionedNewArrayBoundsFC.map(function(stateFeature) {
-  // Filter features in arraysToDigitize that intersect with the current stateFeature
-  var intersectingFeatures = arraysToDigitize.filter(ee.Filter.intersects('.geo', stateFeature.geometry()));
-  
-  // Map over all intersecting features to copy their properties to the stateFeature
-  var mergedProperties = intersectingFeatures.iterate(function(intersectingFeature, result) {
-    // Cast result to a feature (this will accumulate properties)
-    result = ee.Feature(result);
-    // Copy properties from the intersecting feature to the result feature
-    return result.copyProperties(intersectingFeature);
-  }, stateFeature); // Start with the current stateFeature
-  
-  // Return the stateFeature with all copied attributes
-  return ee.Feature(mergedProperties);
-});
-
-// Remove connecting lineStrings by a small unbuffer and rebuffer
-var digitizedArrays = copiedAttributes.map(function(feature){
-  return feature.setGeometry(feature.geometry().buffer(-0.2,1).buffer(0.1,1)); // Just enough unbuffer to dissolve the connecting lines, then return to original size
-});
-
-// Function to merge features by nativeID and create GeometryCollections
-var mergeByIndex = function(nativeID) {
-  // Filter the features by the given index
-  var filteredFeatures = digitizedArrays.filter(ee.Filter.eq('nativeID', nativeID)); 
-  
-  // Check for errant geometries: Geometry collections with LineStrings
-  var filteredGeoms = ee.Geometry(filteredFeatures.union(1).first().geometry()).geometries().map(function(geometry){
-    return ee.Algorithms.If(ee.Geometry(geometry).type().compareTo('Polygon'), null, geometry);}, true); // true is for drop nulls
-  
-  // Set geometry to MultiPolygon or Polygon based on the content
-  var mergedGeometry = ee.Geometry(ee.Algorithms.If(
-    ee.Algorithms.IsEqual(filteredGeoms.size(), 1), // Check if the original geometry is a single polygon
-    ee.Geometry(ee.List(filteredGeoms).get(0)), // If single polygon, return it directly
-    ee.Geometry.MultiPolygon(filteredGeoms) // Otherwise, return as MultiPolygon
-  ));
-  
-  // Create a new feature with the merged geometry and the properties of the first feature
-  var firstFeature = filteredFeatures.first();
-  var mergedFeature = ee.Feature(mergedGeometry).copyProperties(firstFeature);
-  return mergedFeature;
+/*
+// Function to export newly digitized and georeferenced arrays to asset
+var exportAsset = function(asset, name, scriptIter){
+ Export.table.toAsset({
+   collection: asset, 
+   description: "Export_"+name+"_"+scriptIter, 
+   assetId: name+"_asset_"+scriptIter, 
+   maxVertices: 1e9, 
+ });
 };
-
-// Get a list of unique nativeID values
-var uniqueIndices = digitizedArrays.aggregate_array('nativeID').distinct();
-
-// Map over each unique nativeID value to merge the features with that nativeID
-var mergedFeatures = uniqueIndices.map(function(nativeID) {
-  return mergeByIndex(nativeID);
-});
-
-// Convert the list of merged features into a FeatureCollection
-var mergedFC = ee.FeatureCollection(mergedFeatures);
-
-// Export
-Export.table.toDrive({
-    collection: mergedFC,
-    description:'georectifiedSolarArrays',
-    fileFormat: 'GeoJSON',
-    folder: "georectifiedSolarArrays_" + date,
-});
-
-//*/
+ 
+// Export assets (once vertex limit is reached) -- then, save and start new script and add these as assets
+exportAsset(newDigGeoRef_v2, "newDigGeoRef_v2", "inspire");
+*/
