@@ -1,7 +1,7 @@
 mostRecentInstallYear=2025
 minPanelRowArea=15
-maxPanelRowArea=2500
-minNumPanelRows=3
+maxPanelRowArea=2750
+minNumPanelRows=2
 minPmArRatio=0.18
 panelArrayBuff=10
 arrayArrayBuff=20

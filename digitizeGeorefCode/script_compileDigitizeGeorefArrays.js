@@ -264,13 +264,23 @@ var exportAsset = function(asset, name, folder){
    description: "ExportAll_"+name, 
    assetId: folder+name+"_all", 
    maxVertices: 1e9, 
- });
-};
+ });};
+
+// Function to export newly digitized and georeferenced arrays to drive
+var exportDrive = function(asset, name){
+ Export.table.toDrive({
+  collection: asset,
+  description:name+"_all",
+  fileFormat: 'GeoJSON',
+  folder: date+name,
+  //selectors: outSelectors
+});};
  
 // Export compiled assets
 exportAsset(digGeoref, "newDigGeoRef_v2", "BigPanel/v1_1/");
 exportAsset(newArrays, "newArrays_v2", "BigPanel/v1_1/");
 exportAsset(dupPolys, "duplicatePolys_v2", "BigPanel/v1_1/");
+exportDrive(digGeoref, "newDigGeoRef_v2")
 */
 
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~

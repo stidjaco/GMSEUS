@@ -108,7 +108,7 @@ def getSolarOSMData(regionName, countryName):
 
     # For arrayData, select the following columns: start_date, plant:method, osmid, source, name, plant:output:electricity, geometry
     # If any of these columns do not exist, create an empty column of NA values (as a string)
-    # Rename them to: instYr, modType, nativeID, Source, ProjName, cap_mw, geometry
+    # Rename them to: instYr, modType, nativeID, Source, ProjName, capMWDC, geometry
     # Ensure required columns exist, creating them with NA values if missing
     required_columns = {
         'start_date': 'instYr',
@@ -116,7 +116,7 @@ def getSolarOSMData(regionName, countryName):
         'osmid': 'nativeID',
         'source': 'Source',
         'name': 'ProjName',
-        'plant:output:electricity': 'cap_mw',
+        'plant:output:electricity': 'capMWDC',
         'geometry': 'geometry'}
     for col, new_col in required_columns.items():
         if col not in arrayData.columns:
@@ -180,7 +180,7 @@ def getSolarOSMData(regionName, countryName):
     return panelData, arrayData
 
 # Define Function to Process Solar OSM Data
-def processSolarOSMData(regionName, countryName):   
+def processSolarOSMData(regionName, countryName, osmPanelsPath, osmArraysPath):   
 
     # Load the config from the text file and all required variables
     config = gu.load_config('config.txt')   
@@ -202,7 +202,7 @@ def processSolarOSMData(regionName, countryName):
 
     # If arrayData is not empty, process arrayData
     if arrayData is not None and not arrayData.empty:
-        # Capacity (cap_mw) is currently formated as a string and contains: '1 GW', '1 MW', '1 kW', or 'yes'. 
+        # Capacity (capMWDC) is currently formated as a string and contains: '1 GW', '1 MW', '1 kW', or 'yes'. 
         # Formatting can also include '1GW', '1MW', '1kW', or the lower case version of any of these. 
         # It may also contain other strings that should be treated as nan, including existing nan values.
         # If the string contains GW, remove everything except the number and multiply by 1000.
@@ -229,8 +229,8 @@ def processSolarOSMData(regionName, countryName):
             except ValueError:  # If the string cannot be converted to a float
                 return -9999
 
-        # Apply the function to the 'cap_mw' column dynamically. Round to 3 decimal places.
-        arrayData['cap_mw'] = arrayData['cap_mw'].apply(process_capacity).round(3)
+        # Apply the function to the 'capMWDC' column dynamically. Round to 3 decimal places.
+        arrayData['capMWDC'] = arrayData['capMWDC'].apply(process_capacity).round(3)
 
         # ~~~~~~~~~~~~~~~~~ Get Panel Boundaries In Array Data (e.g. MSU Solar Carport, and 1229957948)
 
@@ -252,15 +252,15 @@ def processSolarOSMData(regionName, countryName):
         # IF: an array is less than minimum panel size, remove it (more likely to be rooftop or inverter station)
         arrayData = arrayData[arrayData['area'] >= minPanelRowArea]
 
-        # IF: an array has a perimeter to area ratio greater than 0.188 or area is less than the max panel row area, save it to an panelArrayData dataframe. 
-        # Then remove it from arrayData
-        panelInArrayData = arrayData[(arrayData['PmArRatio'] > minPmArRatio) | (arrayData['area'] < maxPanelRowArea)].reset_index(drop=True)
+        # IF: an array has a perimeter to area ratio greater than 0.188 AND area is less than the max panel row area, save it to an panelInArrayData dataframe. Then remove it from arrayData
+        # OR is key here, otherwise small array shapes get assigned panel status incorrectly. We want high quality panel-row metadata, so it is critical to ensure we only get true panel-rows here.
+        panelInArrayData = arrayData[(arrayData['PmArRatio'] > minPmArRatio) & (arrayData['area'] < maxPanelRowArea)].reset_index(drop=True)
         arrayData = arrayData[~arrayData['nativeID'].isin(panelInArrayData['nativeID'])]
 
         # Dissolve by nativeID to return to multipolygon
         arrayData = arrayData.dissolve(by = 'nativeID').reset_index()
 
-        # Remove panelArrayData shapes that are already in panelData, then merge the remaining dataframes
+        # Remove panelInArrayData shapes that are already in panelData, then merge the remaining dataframes
         # First, check if data exists, then clean DataFrames by dropping rows with invalid or empty geometries, then remove overlapping arrays
         if panelInArrayData is not None:
             panelInArrayData = panelInArrayData[panelInArrayData.geometry.notna()]
@@ -270,7 +270,7 @@ def processSolarOSMData(regionName, countryName):
     
     # Else, if arrayData is empty, return an empty gdf for arrayData and panelInArrayData
     else:
-        arrayData = gpd.GeoDataFrame(columns=['instYr', 'modType', 'nativeID', 'Source', 'ProjName', 'cap_mw', 'geometry'])
+        arrayData = gpd.GeoDataFrame(columns=['instYr', 'modType', 'nativeID', 'Source', 'ProjName', 'capMWDC', 'geometry'])
         panelInArrayData = gpd.GeoDataFrame(columns=['instYr', 'modType', 'nativeID', 'Source', 'ProjName', 'geometry'])
 
     #~~~~~~~~~~~~~~~~~~~~# 
@@ -300,92 +300,134 @@ def processSolarOSMData(regionName, countryName):
 
         # ~~~~~~~~~~~~~~~~~~ Get Array Boundaries In Panel Data
 
-        # IF: a panel has a perimeter to area ratio less than 0.188 or area is greater than max panel row area, save it to an arrayPanelData dataframe. 
-        # Then remove it from panelData
-        arrayInPanelData = panelData[(panelData['PmArRatio'] < minPmArRatio) | (panelData['area'] > maxPanelRowArea)]
+        # IF: a panel has a perimeter to area ratio less than 0.188 or area is greater than max panel row area, save it to an arrayPanelData dataframe. Then remove it from panelData.
+        # We leave condition as OR here, allows for catching common occurance of panels+space between them being mapped as a single panel object when it should be array. Metadata for arrays is less strict (grouped attributes) so we can be more lenient here.
+        arrayInPanelData = panelData[(panelData['PmArRatio'] < minPmArRatio) | (panelData['area'] > maxPanelRowArea)] 
         panelData = panelData[~panelData['nativeID'].isin(arrayInPanelData['nativeID'])]
+
+        # IF any arrayInPanelData shape is within a 20m buffer (arrayArrayBuff) of another arrayInPanelData, merge them into a single array shape
+        arrayInPanelData = gu.groupArrayByVariableAndProximity(arrayInPanelData, arrayArrayBuff, "") # no grouping variable set here
 
         # ~~~~~~~~~~~~~~~~~~ Get New Array Boudaries From Panel Data
 
         # Get the mount type for each panel based on the geometry. assignMountType returns multiple columns, so only return the mount column.
         panelData['mount'] = panelData.apply(gu.assignMountType, axis=1).apply(lambda x: x[0]) # panelData['mount'] = panelData.apply(assignMountType, axis=1)
 
-        # Buffer the geometries by panelArrayBuff, dissovle boundaries by overlap, explode again, and unbuffer by panelArrayBuff * -1. 
-        arrayFromPanelData = panelData.copy()
-        arrayFromPanelData['geometry'] = arrayFromPanelData.buffer(panelArrayBuff)
-        arrayFromPanelData = arrayFromPanelData.dissolve().explode(index_parts=False).reset_index(drop=True)
-
-        # Unbuffer the geometries by the same distance (negative buffer)
-        arrayFromPanelData['geometry'] = arrayFromPanelData.buffer(panelArrayBuff * -1)
-
-        # Check for and remove erroneous geometries in arrays
-        arrayFromPanelData = gu.checkArrayGeometries(arrayFromPanelData)
+        # Create arrays from adjacent panel-rows
+        arrayFromPanelData = gu.createArrayFromPanels(panelData, panelArrayBuff, '', '', False)
 
         # Save the most common mount type for each array based on panels that intersect with the array
         arrayFromPanelData['mount'] = arrayFromPanelData['geometry'].apply(lambda x: panelData[panelData.intersects(x)]['mount'].mode()[0])
 
+        # Set nativeID as 'fromOSMpanels_' plus a unique number from zero to number of arrays minus one
+        arrayFromPanelData = arrayFromPanelData.reset_index(drop=True)
+        arrayFromPanelData['nativeID'] = 'fromOSMpanels_' + arrayFromPanelData.index.astype(str)
+
+        # Drop all columns except nativeID, mount, and geometry
+        arrayFromPanelData = arrayFromPanelData[['nativeID', 'mount', 'geometry']]
+
         # IF any arrayFromPanelData shape is within a 20m buffer (arrayArrayBuff) of another arrayFromPanelData, merge them into a single array shape
         arrayFromPanelData = gu.groupArrayByVariableAndProximity(arrayFromPanelData, arrayArrayBuff, 'mount')
 
-        # Assign each array a unique identifier
-        arrayFromPanelData['arrayID'] = arrayFromPanelData.index
-
         # Save the number of panels in each array based number of intersecting panels
-        arrayFromPanelData['PnlNum'] = arrayFromPanelData['geometry'].apply(lambda x: len(panelData[panelData.intersects(x)]))
+        arrayFromPanelData['pnlNum'] = arrayFromPanelData['geometry'].apply(lambda x: len(panelData[panelData.intersects(x)]))
 
-        # Assign each panel the corresponding arrayID and total panel num in array by spatial join.
-        panelData = gpd.sjoin(panelData, arrayFromPanelData[['arrayID', 'PnlNum', 'geometry']], how='left', predicate='intersects').drop(columns='index_right')
+        # Assign each panel the correspondingtotal panel num in array by spatial join.
+        panelData = gpd.sjoin(panelData, arrayFromPanelData[['pnlNum', 'geometry']], how='left', predicate='intersects').drop(columns='index_right')
 
         # Remove arrays and panels that do not meet the minimum number of panels in an array
-        arrayFromPanelData = arrayFromPanelData[arrayFromPanelData['PnlNum'] >= minNumPanelRows]
-        panelData = panelData[panelData['PnlNum'] >= minNumPanelRows]
+        arrayFromPanelData = arrayFromPanelData[arrayFromPanelData['pnlNum'] >= minNumPanelRows]
+        panelData = panelData[panelData['pnlNum'] >= minNumPanelRows]
     
     # Else, if panelData is empty, return an empty gdf for panelData, arrayInPanelData, and arrayFromPanelData
     else:
         panelData = gpd.GeoDataFrame(columns=['instYr', 'modType', 'nativeID', 'Source', 'ProjName', 'geometry', 'mount'])
         arrayInPanelData = gpd.GeoDataFrame(columns=['instYr', 'modType', 'nativeID', 'Source', 'ProjName', 'geometry'])
-        arrayFromPanelData = gpd.GeoDataFrame(columns=['instYr', 'modType', 'nativeID', 'Source', 'ProjName', 'geometry', 'mount', 'arrayID', 'PnlNum'])
+        arrayFromPanelData = gpd.GeoDataFrame(columns=['instYr', 'modType', 'nativeID', 'Source', 'ProjName', 'geometry', 'mount', 'pnlNum'])
 
     #~~~~~~~~~~~~~~~~~~# 
     # Merge Array Data # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
     #~~~~~~~~~~~~~~~~~~# 
 
-    # Remove arrays with overlap in the following level of priority: arrayData, arrayInPanelData, arrayFromPanelData
+    # OSM array bounds are defined as the "entire plant area", often including the fenced-in area around the panels, our definition of plant/facility boundary. 
+    # OSM panel bounds are defined as individual rows of the solar panel within the solar field. 
+    # We have identified that some contributors have thus interpreted panels as the panel-rows and the space between them, our definition of array boundary (e.g., -84.673137, 42.500187; southwest of Eaton Rapids, MI).
+    # Therefore, we have decided to preference arrayInPanelData and arrayFromPanelData over arrayData, because where they are present, they better represent the array boundary by our definition. 
+    # HOWEVER, baseline arrayData likely contains the best attribute metadata (installation year, capacity, project name, etc), so we will fill missing attributes in arrayInPanelData and arrayFromPanelData with values from arrayData where possible.
+    # Where this process fails, higher priority spatial datasets (e.g., USPVDB) can address, for example, arrays with only partially digitized panel-rows. 
+    # We have also decided to retain the maxPanelRowArea and minPmArRatio thresholds to differentiate these objects from true panels, and for imagery classification QA/QC purposes.
+
+    # Set keep columns for all array data
+    keep_cols = ['instYr', 'modType', 'nativeID', 'Source', 'ProjName', 'capMWDC', 'geometry']
+    keep_cols_types = {'instYr': 'num', 'modType': 'text', 'nativeID': 'text', 'Source': 'text', 'ProjName': 'text', 'capMWDC': 'num', 'geometry': 'geometry'}
+
+    # Ensure all dataframes have the same columns. If a column is missing, add it with NaN values (except geometry, which is required), num cols as -9999, text cols as empty string.
+    for df in [arrayInPanelData, arrayFromPanelData, arrayData]:
+        for col, col_type in keep_cols_types.items():
+            if col not in df.columns:
+                if col_type == 'num':
+                    df[col] = -9999
+                elif col_type == 'text':
+                    df[col] = ''
+                # geometry column is required, so we do not add it if missing
+
+    # For all array data, select the following columns: instYr, modType, nativeID, Source, ProjName, pnlNum, geometry
+    arrayInPanelData = arrayInPanelData[keep_cols]
+    arrayFromPanelData = arrayFromPanelData[keep_cols]
+    arrayData = arrayData[keep_cols]
+
+    # For arrayFromPanelData and arrayInPanelData, add a capMWDC column and set it to -9999
+    arrayFromPanelData['capMWDC'] = -9999
+    arrayInPanelData['capMWDC'] = -9999
+
+    # Set gdf order preference
+    pref1 = arrayInPanelData.copy()
+    pref2 = arrayFromPanelData.copy()
+    pref3 = arrayData.copy()
+
+    # Fill metadata gaps in higher-preference datasets from lower-preference datasets, first: set aggregation config
+    aggConfig = {
+        'instYr':  ('mode',  'num', True),   # take mode of year; always override
+        'capMWDC':  ('mean',  'num', True),  # fill missing capacity using mean
+        'modType': ('mode',  'text', True), # most frequent module type
+        'ProjName':('first', 'text', True), # first project name
+        'Source':  ('mode',  'text', False)}  # most frequent source
+
+    # Fill high-priority datasets from lower ones
+    pref2 = gu.fillMetadataByOverlap(pref2, pref3, aggConfig)
+    pref1 = gu.fillMetadataByOverlap(pref1, pref2, aggConfig)
+
+    # Remove arrays with overlap in the following level of priority: arrayInPanelData, arrayFromPanelData, arrayData
     # This order maintains arrays composed of subarray sections (multipolygons)
     # First, check if data exists, then clean DataFrames by dropping rows with invalid or empty geometries, then remove overlapping arrays
     # Solves an issue where an array df is empty, or contains errant geometries
-    if arrayInPanelData is not None:
-        arrayInPanelData = arrayInPanelData[arrayInPanelData.geometry.notna()]
-        if not arrayInPanelData.empty and not arrayData.empty:
-            arrayInPanelData = arrayInPanelData[~arrayInPanelData.intersects(unary_union(arrayData.geometry.values))]
-    if arrayFromPanelData is not None:
-        arrayFromPanelData = arrayFromPanelData[arrayFromPanelData.geometry.notna()]
-        if not arrayFromPanelData.empty and not arrayData.empty:
-            arrayFromPanelData = arrayFromPanelData[~arrayFromPanelData.intersects(unary_union(arrayData.geometry.values))]
-        if arrayInPanelData is not None and not arrayInPanelData.empty:
-            arrayFromPanelData = arrayFromPanelData[~arrayFromPanelData.intersects(unary_union(arrayInPanelData.geometry.values))]
-
-    # For arrayFromPanelData and arrayInPanelData, select the following columns: instYr, modType, nativeID, Source, ProjName, PnlNum, geometry
-    arrayFromPanelData = arrayFromPanelData[['instYr', 'modType', 'nativeID', 'Source', 'ProjName', 'geometry']]
-    arrayInPanelData = arrayInPanelData[['instYr', 'modType', 'nativeID', 'Source', 'ProjName', 'geometry']]
-
-    # For arrayFromPanelData and arrayInPanelData, add a cap_mw column and set it to -9999
-    arrayFromPanelData['cap_mw'] = -9999
-    arrayInPanelData['cap_mw'] = -9999
+    if pref2 is not None:
+        pref2 = pref2[pref2.geometry.notna()]
+        if not pref2.empty and not pref1.empty:
+            pref2 = pref2[~pref2.intersects(unary_union(pref1.geometry.values))]
+    if pref3 is not None:
+        pref3 = pref3[pref3.geometry.notna()]
+        if not pref3.empty and not pref1.empty:
+            pref3 = pref3[~pref3.intersects(unary_union(pref1.geometry.values))]
+        if not pref3.empty and pref2 is not None and not pref2.empty:
+            pref3 = pref3[~pref3.intersects(unary_union(pref2.geometry.values))]
 
     # Merge the array data
-    arrayData = pd.concat([arrayData, arrayInPanelData, arrayFromPanelData])
+    arrayData = pd.concat([pref1, pref2, pref3]).reset_index(drop=True)
 
     #~~~~~~~~~~~~~~~~~~~~~~~~~# 
     # Fill Gaps and Save Data # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
     #~~~~~~~~~~~~~~~~~~~~~~~~~#
 
-    # Save the final number of panels in each array based number of intersecting panels (overwrites initial count)
-    arrayData['PnlNum'] = arrayData['geometry'].apply(lambda x: len(panelData[panelData.intersects(x)]))
+    # Assign a unique arrayID to each array, from 1 to number of arrays (use range)
+    arrayData['arrayID'] = range(1, len(arrayData) + 1)
 
-    # For each array and each panel, calculate the area and save as a new column
-    panelData['area'] = panelData.area
-    arrayData['area'] = arrayData.area
+    # Save the final number of panels in each array based number of intersecting panels (overwrites initial count)
+    arrayData['pnlNum'] = arrayData['geometry'].apply(lambda x: len(panelData[panelData.intersects(x)]))
+
+    # For each array and each panel, calculate the area and save as a new column, round to 0 decimal places
+    panelData['area'] = panelData.area.round(0)
+    arrayData['area'] = arrayData.area.round(0)
 
     # instYr values are formatted in several ways: 'YYYY-MM' or 'YYYY-MM-DD', 'MM/YYYY', 'YYYY', m/d/YYYY, with additional examples of: 'October 2018', 'March 1, 2015', '6/11/2011', '11/2019', '20183', '2021.0'
     # We want to extract the year from these strings. If the year is not present, or if the year is not between 1900 and 2025, set to -9999
@@ -433,6 +475,10 @@ def processSolarOSMData(regionName, countryName):
     panelData['modType'] = panelData['modType'].fillna('c-si')
     arrayData['modType'] = arrayData['modType'].fillna('c-si')
 
+    # Assign each panel the corresponding arrayID by spatial join. Only if panelData is not empty and arrayData is not empty
+    if not panelData.empty and not arrayData.empty:
+        panelData = gpd.sjoin(panelData, arrayData[['arrayID', 'geometry']], how='left', predicate='intersects').drop(columns='index_right')
+
     # If dataframes are empty, ignore, otherwise save the data to a shapefile in the OSM download folder for the region
     if panelData is not None and not panelData.empty:
         panelData.to_file(os.path.join(osmPanelsPath, regionName + 'SolarPanels.shp'))
@@ -441,3 +487,48 @@ def processSolarOSMData(regionName, countryName):
 
     # If desired, return the dataframes
     #return panelData, arrayData
+
+# Define function to iterate through each region in a country and extract OSM solar data
+def getCountrySolarOSMData(regions, countryName, wd, processCountry=True):
+
+    # Load the config from the text file and all required variables
+    config = gu.load_config('config.txt')   
+    toCRS = config['to_crs']  # EPSG:6350 NAD83 (2011)
+    toCRS = f'EPSG:{toCRS}'
+
+    # Set OSM data download and processing paths
+    downloaded_path = os.path.join(wd, r'Data\Downloaded')
+    osmDownloadPath = os.path.join(downloaded_path, r'SolarDB\OSM')
+    osmCountryPath = os.path.join(osmDownloadPath, countryName)
+    osmPanelsPath = os.path.join(osmCountryPath, r'Panels')
+    osmArraysPath = os.path.join(osmCountryPath, r'Arrays')
+
+    # First, check if the required folder exist, if not create it.
+    gu.checkFolder(downloaded_path)
+    gu.checkFolder(osmDownloadPath)
+    gu.checkFolder(osmCountryPath)
+    gu.checkFolder(osmPanelsPath)
+    gu.checkFolder(osmArraysPath)
+
+    # Loop through each region and get the solar data
+    for region in regions:
+        processSolarOSMData(region, countryName, osmPanelsPath, osmArraysPath)
+        print(region + ' data has been downloaded and processed.')
+    
+    # If processCountry is True, load all data and print summary statistics, and export combined shapefiles
+    if processCountry:
+        # Load all solar panel and array data
+        panels = gu.load_all_gdf(osmPanelsPath, 'shp', toCRS)
+        arrays = gu.load_all_gdf(osmArraysPath, 'shp', toCRS)
+
+        # Print the number of solar panels and arrays in countryName
+        print(f'Total solar panels in {countryName}: {len(panels)}')
+        print(f'Total solar arrays in {countryName}: {len(arrays)}')
+
+        # Print sum of area of arrays and panels in km in countryName
+        print(f'Total solar panels area in {countryName}: {panels.area.sum() / 1e6:.2f} km^2')
+        print(f'Total solar arrays area in {countryName}: {arrays.area.sum() / 1e6:.2f} km^2')
+
+        # Save the data to a shapefile in the OSM download folder, append with country name
+        panels.to_file(os.path.join(osmCountryPath, 'OSMSolarPanels_' + countryName + '.shp'))
+        arrays.to_file(os.path.join(osmCountryPath, 'OSMSolarArrays_' + countryName + '.shp'))
