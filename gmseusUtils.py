@@ -6,6 +6,7 @@ import os
 import glob
 from pathlib import Path
 import warnings
+from shapely.ops import unary_union
 
 # Import libraries for plotting
 import matplotlib.pyplot as plt
@@ -36,6 +37,9 @@ _HERE = Path(__file__).resolve().parent
 # one level up = your project root
 wd = _HERE.parent
 
+# Set pandas option to avoid future warning about downcasting
+pd.set_option('future.no_silent_downcasting', True)
+
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ GM-SEUS Startup Functions
 
 # Function to check if folder exists, if not create it
@@ -60,48 +64,60 @@ def load_config(filename):
 
 # Function to load geodataframes from all files in a folder
 def load_all_gdf(path, extension, target_crs):
+    # List all files with the given extension in the folder
     files = [f for f in os.listdir(path) if f.endswith(f'.{extension}')]
-    dfs = [gpd.read_file(os.path.join(path, file)) for file in files]
+    gdfs = [gpd.read_file(os.path.join(path, file)) for file in files]
+    # Check for empty GeoDataFrames and filter them out
+    gdfs = [gdf for gdf in gdfs if not gdf.empty]
     # Directly concatenate and reproject
-    return gpd.GeoDataFrame(pd.concat(dfs, ignore_index=True)).to_crs(target_crs)
+    return gpd.GeoDataFrame(pd.concat(gdfs, ignore_index=True)).to_crs(target_crs)
 
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ GM-SEUS General Functions
 
 # Function to format the existing solar array datasets to the desired schema
-def formatDf(df, nativeIdentifier, installationYear, capacityMWdc, area_m2, moduleType, agrivoltaicType, azimuth, mountTechnology, source):
+def formatDf(df, nativeIdentifier, installationYear, capacityMWdc, capacityMWac, area_m2, moduleType, groundCover, azimuth, tilt, mountTechnology, source):
     # Change column names to match the schema
-    df = df.rename(columns={nativeIdentifier: 'nativeID', capacityMWdc: 'cap_mw', area_m2: 'area', installationYear: 'instYr', moduleType: 'modType', azimuth: 'azimuth', mountTechnology: 'mount', agrivoltaicType: 'AVtype'})
+    df = df.rename(columns={nativeIdentifier: 'nativeID', capacityMWdc: 'capMWDC', capacityMWac: 'capMWAC', area_m2: 'area', installationYear: 'instYr', moduleType: 'modType', azimuth: 'azimuth', tilt: 'tilt', mountTechnology: 'mount', groundCover: 'grndCvr', source: 'Source'})
 
-    # Set source
-    df['Source'] = source
+    # Set Source. If any Source is missing, print a warning.
+    df['Source'] = df['Source'].fillna(source)
+    df['Source'] = df['Source'].astype(str)
+    if df['Source'].isnull().any():
+        print('Warning: Some Source values are missing after formatting.')
 
     # Fill empy numeric column rows with -9999, and empty string column rows with NaN
-    df['cap_mw'] = df['cap_mw'].fillna(-9999)
+    df['capMWDC'] = df['capMWDC'].fillna(-9999)
+    df['capMWAC'] = df['capMWAC'].fillna(-9999)
     df['area'] = df['area'].fillna(-9999)
     df['instYr'] = df['instYr'].fillna(-9999)
     df['azimuth'] = df['azimuth'].fillna(-9999)
+    df['tilt'] = df['tilt'].fillna(-9999)
     df['modType'] = df['modType'].fillna('')
-    df['AVtype'] = df['AVtype'].fillna('')
+    df['grndCvr'] = df['grndCvr'].fillna('')
     df['mount'] = df['mount'].fillna('')
 
     # Force data types to match schema
     df['nativeID'] = df['nativeID'].astype(str)
     df['instYr'] = df['instYr'].astype(int)
-    df['cap_mw'] = df['cap_mw'].astype(float)
+    df['capMWDC'] = df['capMWDC'].astype(float)
+    df['capMWAC'] = df['capMWAC'].astype(float)
     df['area'] = df['area'].astype(float)
     df['azimuth'] = df['azimuth'].astype(float)
+    df['tilt'] = df['tilt'].astype(float)
     df['modType'] = df['modType'].astype(str)
     df['modType'] = df['modType'].str.lower() # Ensure modtype is lowercase
-    df['AVtype'] = df['AVtype'].astype(str)
-    df['AVtype'] = df['AVtype'].str.lower() # Ensure AVtype is lowercase
+    df['grndCvr'] = df['grndCvr'].astype(str)
+    df['grndCvr'] = df['grndCvr'].str.lower() # Ensure grndCvr is lowercase
     df['mount'] = df['mount'].astype(str)
-    df['mount'] = df['mount'].str.lower() # Ensure mount is
+    df['mount'] = df['mount'].str.lower() # Ensure mount is lowercase
 
-    # As a default, if modType is not c-si or csp or thin-film, set to c-si. We use this information in the image classification.
-    df.loc[~df['modType'].isin(['c-si', 'csp', 'thin-film']), 'modType'] = 'c-si'
+    # As a default, if modType is not in the accepted potential module types, set to c-si.
+    potentialModTypes = ['mono-c-si', 'multi-c-si', 'c-si', 'csp', 'thin-film']
+    df.loc[~df['modType'].isin(potentialModTypes), 'modType'] = 'c-si'
 
     # Select schema columns
-    df = df[['nativeID', 'instYr', 'cap_mw', 'area', 'modType', 'AVtype', 'azimuth', 'mount', 'Source', 'geometry']]
+    df = df[['nativeID', 'instYr', 'capMWDC', 'capMWAC', 'area', 'modType', 'grndCvr', 'azimuth', 'tilt', 'mount', 'Source', 'geometry']]
+    df = df.reset_index(drop=True)
     return df
 
 # Function to assign mount type to solar panel-rows based on azimuth and panel geometry. Also returns all relevant design parameters for each panel-row. Requires the setting of a length ratio threshold and an area ratio threshold.
@@ -227,13 +243,15 @@ def checkArrayGeometries(arrays):
     return arrays
 
 # Function to create an array from a set of panel rows based on the distance between them
-def createArrayFromPanels(panels, buffDist, dissolveID, areaID='area'):
- 
-    # Count panels per group before dissolving
-    panelCounts = panels.groupby(dissolveID).size().reset_index(name='numPanels')
+def createArrayFromPanels(panelsGDF, buffDist, dissolveID, areaID='area', getArrayStats=True):
 
-    # Get the total area of the panels within each group (sum of area column). 
-    panelAreas = panels.groupby(dissolveID)[areaID].sum().reset_index(name='pnlArea')
+    # Create a copy of the panels GeoDataFrame to avoid modifying the original
+    panels = panelsGDF.copy()
+
+    # If dissolveID is absent or "", create a temporary dissolveID
+    if dissolveID is None or dissolveID == '':
+        panels['tempDissolveID'] = 1
+        dissolveID = 'tempDissolveID'
     
     # Buffer the geometries by buffDist, dissovle boundaries, and unbuffer by buffDist* -1. Assign the number of objects being dissovle into a numPanels column.
     arrays = panels.copy()
@@ -241,21 +259,39 @@ def createArrayFromPanels(panels, buffDist, dissolveID, areaID='area'):
     arrays = arrays.dissolve(by=[dissolveID], as_index=False)
     arrays['geometry'] = arrays.buffer(buffDist * -1)
 
-    # Merge the panel counts and panel areas back into the dissolved array DataFrame. Select only the dissolveID and respective columns in the right df
-    arrays = arrays.merge(panelCounts[[dissolveID, 'numPanels']], on=dissolveID, how='left')
-    arrays = arrays.merge(panelAreas[[dissolveID, 'pnlArea']], on=dissolveID, how='left')
+    # If a temporary dissolveID was created, explode arrays
+    if dissolveID == 'tempDissolveID':
+        arrays = arrays.explode(index_parts=False).reset_index(drop=True)
+
+    # If getArrayStats is True, calculate the number of panels and total panel area within each array
+    if getArrayStats:
+        # Count panels per group before dissolving
+        panelCounts = panels.groupby(dissolveID).size().reset_index(name='numPanels')
+
+        # Get the total area of the panels within each group (sum of area column). 
+        panelAreas = panels.groupby(dissolveID)[areaID].sum().reset_index(name='pnlArea')
+
+        # Merge the panel counts and panel areas back into the dissolved array DataFrame. Select only the dissolveID and respective columns in the right df
+        arrays = arrays.merge(panelCounts[[dissolveID, 'numPanels']], on=dissolveID, how='left')
+        arrays = arrays.merge(panelAreas[[dissolveID, 'pnlArea']], on=dissolveID, how='left')
 
     # Due to the buffering and unbuffering, some mulitpolygons contain erroneous geometries that result in a near-zero area, linestrings, or points. Remove these.
     arrays = checkArrayGeometries(arrays)
 
-    # Reset index
+    # Reset index and drop temporary dissolveID if it was created
     arrays = arrays.reset_index(drop=True)
+    arrays = arrays.drop(columns='tempDissolveID', errors='ignore')
     return arrays
 
 # Define a function that groups solar panels by mount type and proximity
 def groupArrayByVariableAndProximity(gdf, buffer_distance, variable):
     # Set a temporary gdf to buffer
     gdfBuffer = gdf.copy()
+
+    # If variable is not defined (function only has two arguments), create a dummy variable column
+    if variable is None or variable == '':
+        gdfBuffer['tempVar'] = 1
+        variable = 'tempVar'
 
     # Create a buffered version of the geometries
     gdfBuffer['geometry'] = gdfBuffer.buffer(buffer_distance)
@@ -275,8 +311,9 @@ def groupArrayByVariableAndProximity(gdf, buffer_distance, variable):
     # Group polygons into multiploygons by array ID. Keep the column
     gdfOut = gdfOut.dissolve(by = 'tempDissolveID').reset_index()
 
-    # Drop the tempDissolveID column
+    # Drop the tempDissolveID column and the temporary variable column if it was created
     gdfOut = gdfOut.drop(columns='tempDissolveID', errors='ignore')
+    gdfOut = gdfOut.drop(columns='tempVar', errors='ignore')
     return gdfOut
 
 # Function to drop self-overlapping geometries in a GeoDataFrame
@@ -327,6 +364,253 @@ def dropSelfOverlapGDF(gdf: gpd.GeoDataFrame, unbuffer_m: float = 1.0) -> gpd.Ge
     out = base[~base["tempID"].isin(to_drop_ids)].copy()
     out = out.drop(columns=["tempID"]).reset_index(drop=True)
     return out
+
+# Function to buffer point data and remove overlaps based on order of preference
+def bufferFacilityPointData(gdf, bufferDist):
+    gdf_buffer = gdf.copy()
+    gdf_buffer['geometry'] = gdf_buffer.buffer(bufferDist)
+    return gdf_buffer
+
+# Function to preferentially filter overlapping polygons across multiple GeoDataFrames
+def preferentialSpatialFilter(gdfList, predicate="intersects", ensure_same_crs=True, return_type="accepted"):
+    """
+    Preferentially keep polygons by list order. For each layer (after the first),
+    drop features that spatially intersect anything already kept from earlier layers.
+
+    Parameters
+    ----------
+    gdf_list : list[gpd.GeoDataFrame]
+        Ordered by priority (0 = highest). Must be polygonal (or at least area-ish).
+    predicate : str
+        Spatial predicate to use (e.g., "intersects", "overlaps", "touches", "within").
+    ensure_same_crs : bool
+        If True, reproject all to the CRS of the first GDF.
+    copy : bool
+        If True, work on copies (leaves inputs untouched).
+
+    Returns
+    -------
+    kept_layers : list[gpd.GeoDataFrame]
+        Filtered GDFs in the same order as input.
+    accepted_all : gpd.GeoDataFrame
+        Concatenation of all kept features across layers (priority-resolved).
+    masks : list[pd.Series]
+        Boolean masks aligned to each *original* GDF index indicating which rows were kept.
+    """
+    if not gdfList:
+        return [], gpd.GeoDataFrame(geometry=[], crs=None), []
+
+    # Normalize CRS
+    crs0 = gdfList[0].crs
+    layers = []
+    for g in gdfList:
+        gi = g.copy()
+        if ensure_same_crs and gi.crs != crs0:
+            gi = gi.to_crs(crs0)
+        # GeoPandas sometimes dislikes non-unique indices in sjoin;
+        # keep original index for mask, but use a temporary, unique index for operations.
+        gi = gi.copy()
+        gi["_tmp_rowid"] = range(len(gi))
+        layers.append(gi)
+
+    kept_layers = []
+    masks = []
+    accepted = None  # grows as we go
+
+    for i, cur in enumerate(layers):
+        if i == 0 or (accepted is None or accepted.empty):
+            kept = cur
+            mask = pd.Series(True, index=gdfList[i].index)
+        else:
+            # sjoin to find rows that intersect any already-accepted feature
+            # Left join: rows with a match (index_right notna) are conflicts and get dropped
+            joined = gpd.sjoin(cur[["_tmp_rowid", "geometry"]],
+                               accepted[["geometry"]],
+                               how="left",
+                               predicate=predicate)
+
+            to_drop = joined["index_right"].notna()
+            # keep the ones with NO match in accepted
+            kept_rowids = set(joined.loc[~to_drop, "_tmp_rowid"])
+            kept = cur[cur["_tmp_rowid"].isin(kept_rowids)]
+
+            # Build a boolean mask aligned to original index
+            mask = cur.set_index(gdfList[i].index).index.to_series().map(
+                lambda idx: cur.loc[idx, "_tmp_rowid"] in kept_rowids
+                if idx in cur.index else False
+            )
+            # If the original had non-unique indices, map by position instead:
+            if mask.isna().any():
+                # fallback: positional mask
+                pos_mask = cur["_tmp_rowid"].isin(kept_rowids).values
+                mask = pd.Series(pos_mask, index=gdfList[i].index)
+
+        # Clean temp column for the outward-facing result
+        kept = kept.drop(columns=["_tmp_rowid"], errors="ignore")
+
+        kept_layers.append(kept)
+        masks.append(mask)
+
+        # Grow the accepted pool for the next iteration.
+        accepted = kept if accepted is None else pd.concat([accepted, kept], ignore_index=True)
+
+    # Finalize accepted_all CRS
+    accepted_all = accepted.set_crs(crs0, allow_override=True)
+
+    # Select return type
+    if return_type == "kept":
+        return kept_layers
+    elif return_type == "accepted":
+        return accepted_all
+    elif return_type == "masks":
+        return masks
+    elif return_type == "all":
+        return kept_layers, accepted_all, masks
+    else:
+        raise ValueError("Invalid return_type. Must be one of {'kept', 'accepted', 'masks', 'all'}.")
+
+# Function to fill missing attributes in target from an overlapping source
+def fillMetadataByOverlap(target, source, aggConfig, predicate='intersects'):
+    """
+    Fill attributes in `target` from overlapping `source` features based on aggConfig.
+
+    Parameters
+    ----------
+    target, source : GeoDataFrame
+        Input GeoDataFrames with same CRS and valid geometries.
+    aggConfig : dict
+        Mapping of column name -> (aggregator, kind, override)
+        - aggregator: 'mode' | 'mean' | 'median' | 'first' | callable(series)->scalar
+        - kind: 'num' | 'text' (determines cleaning/coercion)
+        - override: bool (True = overwrite even if target already has a value)
+    predicate : str
+        Spatial predicate for matching ('intersects', 'overlaps', etc.)
+
+    Returns
+    -------
+    GeoDataFrame : target with filled/overwritten attributes.
+    """
+    if target is None or source is None or target.empty or source.empty:
+        return target
+
+    tgt = target.copy().reset_index(drop=False).rename(columns={'index': '_i'})
+    src = source.copy()
+    cols = list(aggConfig.keys())
+
+    # Ensure all columns exist
+    for c in cols:
+        if c not in tgt.columns: tgt[c] = np.nan
+        if c not in src.columns: src[c] = np.nan
+
+    # Spatial join (many sources per target)
+    j = gpd.sjoin(
+        tgt[['_i', 'geometry']],
+        src[cols + ['geometry']],
+        how='left',
+        predicate=predicate)
+    if j.empty:
+        return gpd.GeoDataFrame(tgt.drop(columns=['_i']), geometry='geometry', crs=target.crs)
+
+    # Cleaning helpers
+    def _clean_num(s: pd.Series) -> pd.Series:
+        s = pd.Series(s)                          # ensure Series
+        s = s.mask(s.isin([-9999, ""]))           # set sentinels to NaN
+        return pd.to_numeric(s, errors="coerce").dropna()
+    def _clean_txt(s: pd.Series) -> pd.Series:
+        s = pd.Series(s, dtype="object")
+        s = s.mask(s.isin([-9999, ""]))           # set sentinels to NaN
+        return s.dropna()
+
+    # Define aggregators
+    def _agg_mode(s: pd.Series, kind: str):
+        s2 = _clean_num(s) if kind == "num" else _clean_txt(s)
+        if s2.empty:
+            return np.nan
+        m = s2.mode()
+        v = (m.iloc[0] if not m.empty else (s2.median() if kind == "num" else np.nan))
+        # enforce type
+        if kind == "num":
+            v = float(v)  # ensure numeric scalar
+        else:
+            v = str(v)
+        return v
+    def _agg_mean(s: pd.Series, kind: str):
+        s2 = _clean_num(s)
+        return float(s2.mean()) if not s2.empty else np.nan
+    def _agg_median(s: pd.Series, kind: str):
+        s2 = _clean_num(s)
+        return float(s2.median()) if not s2.empty else np.nan
+    def _agg_first(s: pd.Series, kind: str):
+        s2 = _clean_num(s) if kind == "num" else _clean_txt(s)
+        if s2.empty:
+            return np.nan
+        v = s2.iloc[0]
+        return float(v) if kind == "num" else str(v)
+    agg_registry = {
+        'mode': _agg_mode,
+        'mean': _agg_mean,
+        'median': _agg_median,
+        'first': _agg_first}
+
+    # Build per-column aggregator wrappers
+    agg_funcs = {}
+    for col, (agg, kind, _) in aggConfig.items():
+        if callable(agg):
+            def make_user_fn(user_fn, kind):
+                def wrapper(s):
+                    cleaned = _clean_num(s) if kind == 'num' else _clean_txt(s)
+                    return np.nan if cleaned.empty else user_fn(cleaned)
+                return wrapper
+            agg_funcs[col] = make_user_fn(agg, kind)
+        else:
+            base = agg_registry.get(agg, _agg_mode)
+            agg_funcs[col] = (lambda base=base, kind=kind: (lambda s: base(s, kind)))()
+
+    # Aggregate overlapping values per target geometry
+    agg = j.groupby('_i').agg(agg_funcs)
+
+    # Fill or overwrite target
+    tgt = tgt.set_index('_i')
+    for col, (_, _, override) in aggConfig.items():
+        vals = agg.get(col)
+        if vals is None:
+            continue
+        # Identify rows to fill
+        if override:
+            to_fill = vals.index[vals.notna()]
+        else:
+            miss = tgt[col].isna() | (tgt[col] == -9999) | (tgt[col] == "")
+            to_fill = miss.index[miss.loc[miss.index] & vals.loc[miss.index].notna()]
+        
+        # Before update: relax dtype so assignment is compatible
+        if aggConfig[col][1] == "num":
+            # allow floats during filling
+            tgt[col] = pd.to_numeric(tgt[col], errors="coerce").astype("float64")
+        else:
+            tgt[col] = tgt[col].astype("string")  # pandas nullable string
+
+        # Update
+        tgt.loc[to_fill, col] = vals.loc[to_fill]
+
+        # After update: tighten dtype again
+        if aggConfig[col][1] == "num":
+            if col == "instYr":
+                # year should be integer; round then set nullable integer
+                tgt[col] = pd.to_numeric(tgt[col], errors="coerce").round().astype("Int64")
+            else:
+                tgt[col] = pd.to_numeric(tgt[col], errors="coerce").astype("float64")
+        else:
+            tgt[col] = tgt[col].astype("string")
+
+    return gpd.GeoDataFrame(tgt.reset_index(drop=True),geometry='geometry', crs=target.crs)
+
+# Function to fill metadata gaps across multiple GeoDataFrames based on a provided preference order and overlap
+# Starting at the lowest preference dataset, fill metadata gaps in gdfAll moving up the preference list. Function to iterate through preference list. 
+def iterateFillMetadataByOverlap(gdfAll, gdfMetadataPriorityList, aggConfig):
+    # Iterate through the gdfList in reverse order (from lowest to highest preference)
+    for gdf in reversed(gdfMetadataPriorityList):
+        gdfAll = fillMetadataByOverlap(gdfAll, gdf, aggConfig)
+    return gdfAll
 
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ GM-SEUS Plotting Functions
 
