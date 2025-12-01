@@ -612,6 +612,64 @@ def iterateFillMetadataByOverlap(gdfAll, gdfMetadataPriorityList, aggConfig):
         gdfAll = fillMetadataByOverlap(gdfAll, gdf, aggConfig)
     return gdfAll
 
+# Function to read in the shapefiles/geojsons from folder and return a processed panel geodataframe
+def getPanels_method(path):
+
+    # Load the config from the text file
+    config = load_config(os.path.join(wd, r'Code\config.txt'))
+    gee_crs = config['gee_crs'] # native projection of Google Earth Engine exports
+    toCRS = config['to_crs']  # EPSG:6350 NAD83 (2011)
+
+    # Append toCRS with the EPSG prefix for use in GeoPandas
+    toCRS = f'EPSG:{toCRS}'
+
+    # Function to load geodataframes if different files are present in the folder
+    def load_gdf(path, extension, target_crs):
+        files = [f for f in os.listdir(os.path.join(path)) if f.endswith(f'.{extension}')]
+        dfs = [gpd.read_file(os.path.join(path, file)) for file in files]
+        # Directly concatenate, set crs, and reproject
+        return gpd.GeoDataFrame(pd.concat(dfs, ignore_index=True)).set_crs(gee_crs).to_crs(target_crs)
+    
+    # Handle both GeoJson and Shp files, both may be present depending on script4 output requirements (vertex limit of geojson)
+    # Check what file extensions are present in the folder (either/or geojson or shapefile). 
+    # If both are present, load both and concatenate. If only one is present, load that one.
+    geoJsonFileNum = len([f for f in os.listdir(os.path.join(path)) if f.endswith('.geojson')])
+    shpFileNum = len([f for f in os.listdir(os.path.join(path)) if f.endswith('.shp')])
+    if geoJsonFileNum > 0 and shpFileNum > 0:
+        solarPanelsJSON = load_gdf(path, 'geojson', toCRS)
+        solarPanelsSHP = load_gdf(path, 'shp', toCRS)
+        solarPanels = pd.concat([solarPanelsJSON, solarPanelsSHP], ignore_index=True)
+        print('Both geojson and shapefile found in the folder. Concatenating both.')
+    elif geoJsonFileNum > 0:
+        solarPanels = load_gdf(path, 'geojson', toCRS)
+    elif shpFileNum > 0:
+        solarPanels = load_gdf(path, 'shp', toCRS)
+    else:
+        raise ValueError('No valid file extensions found in the folder. Please provide either a geojson or shapefile.')
+
+    # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ Explode arrays into panels, remove array with missing panels
+
+    # Remove rows where pnlsPres == "No"
+    solarPanels = solarPanels[solarPanels['pnlsPres'] != 'No']
+
+    # Remove rows where pnlNum is 1
+    solarPanels = solarPanels[solarPanels['pnlNum'] > 1]
+
+    # Explode the multipolygons
+    solarPanels = solarPanels.explode(index_parts=False)
+
+    # Reset the index
+    solarPanels = solarPanels.reset_index(drop=True)
+
+    # Drop the subset, pnlsPres columns
+    solarPanels = solarPanels.drop(columns='pnlsPres')
+
+    # Set area
+    solarPanels['area'] = solarPanels.geometry.area
+
+    # Return the geodataframe
+    return solarPanels
+
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ GM-SEUS Plotting Functions
 
 # Create a function to merge raster files in a folder. This function will merge all TIFF files in a folder and reproject the merged raster to the specified CRS
