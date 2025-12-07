@@ -1,0 +1,18 @@
+name: BigPanelOSMPlanet
+channels:
+  - conda-forge
+dependencies:
+  - python=3.11
+  - geopandas
+  - osmnx
+  - numpy
+  - pandas
+  - shapely
+  - rtree
+  - pyproj
+  - ipykernel
+  - matplotlib-scalebar
+  - rasterio
+  - pip
+  - pip:
+      - osmium
