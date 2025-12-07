@@ -1,3 +1,4 @@
+currentVersion=v2_0
 mostRecentInstallYear=2025
 minPanelRowArea=15
 maxPanelRowArea=2750
