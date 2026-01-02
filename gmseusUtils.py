@@ -7,6 +7,7 @@ import glob
 from pathlib import Path
 import warnings
 from shapely.ops import unary_union
+from shapely.geometry import Polygon, mapping
 
 # Import libraries for plotting
 import matplotlib.pyplot as plt
@@ -40,7 +41,7 @@ wd = _HERE.parent
 # Set pandas option to avoid future warning about downcasting
 pd.set_option('future.no_silent_downcasting', True)
 
-# ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ GM-SEUS Startup Functions
+# ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ Startup and General Functions
 
 # Function to check if folder exists, if not create it
 def checkFolder(folder):
@@ -71,6 +72,54 @@ def load_all_gdf(path, extension, target_crs):
     gdfs = [gdf for gdf in gdfs if not gdf.empty]
     # Directly concatenate and reproject
     return gpd.GeoDataFrame(pd.concat(gdfs, ignore_index=True)).to_crs(target_crs)
+
+# Function to get H3 hexagons covering an AOI geometry at a specified resolution
+def getH3(aoi_geom, res=5, toCRS='EPSG:4326'):
+    """
+    aoi_geom: GeoDataFrame, GeoSeries, or shapely geometry.
+              If GeoDataFrame/GeoSeries, CRS can be anything; it will be reprojected to EPSG:4326.
+    res     : H3 resolution (int)
+
+    Returns: GeoDataFrame with columns ['h3_index', 'geometry'] in EPSG:4326.
+    """
+    # Import h3 inside function to avoid hard dependency if not used
+    import h3
+
+    # ---- Normalize AOI geometry ----
+    if isinstance(aoi_geom, (gpd.GeoDataFrame, gpd.GeoSeries)):
+        if aoi_geom.crs is not None and aoi_geom.crs.to_epsg() != 4326:
+            aoi_geom = aoi_geom.to_crs(4326)
+        geom = unary_union(aoi_geom.geometry)  # dissolve to one (multi)polygon
+    else:
+        # assume a single shapely geometry already in EPSG:4326
+        geom = aoi_geom
+
+    # ---- Shapely to __geo_interface__ dict (lon/lat) ----
+    geo = mapping(geom)  # this is standard GeoJSON-style: lon, lat
+
+    # ---- __geo_interface__ to H3Shape to cells ----
+    # h3 v4 polygon API: convert geo to H3Shape, then get cells at resolution
+    h3shape = h3.geo_to_h3shape(geo)              # uses the polygon interface :contentReference[oaicite:0]{index=0}
+    cells = h3.h3shape_to_cells(h3shape, res)     # collection of H3 indexes :contentReference[oaicite:1]{index=1}
+
+    # ---- Cells to shapely hex polygons ----
+    hex_polys = []
+    hex_ids = []
+    for cell in cells:
+        # v4 function: returns sequence of (lat, lng) pairs :contentReference[oaicite:2]{index=2}
+        boundary = h3.cell_to_boundary(cell)
+        # shapely expects (x=lon, y=lat)
+        lonlat = [(lng, lat) for (lat, lng) in boundary]
+        hex_polys.append(Polygon(lonlat))
+        hex_ids.append(cell)
+    gdf_hex = gpd.GeoDataFrame(
+        {"h3_index": hex_ids},
+        geometry=hex_polys,
+        crs="EPSG:4326")
+    
+    # Reproject to target CRS
+    gdf_hex = gdf_hex.to_crs(toCRS)
+    return gdf_hex
 
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ GM-SEUS General Functions
 
@@ -669,6 +718,71 @@ def getPanels_method(path):
 
     # Return the geodataframe
     return solarPanels
+
+# Function to give a gdf list that is in preferential order for spatial filtering, and create merged panel datasets
+def preferentialSpatialPanelRowFilter(gdfList):
+
+    # Load the config from the text file
+    config = load_config(os.path.join(wd, r'Code\config.txt'))
+    panelArrayBuff = config['panelArrayBuff']  # Buffer distance between panels and arrays in meters
+    toCRS = config['to_crs']  # EPSG:6350 NAD83 (2011)
+
+    # Append toCRS with the EPSG prefix for use in GeoPandas
+    toCRS = f'EPSG:{toCRS}'
+
+    # Check that both GeoDataFrames have the toCRS
+    for i in range(len(gdfList)):
+        if gdfList[i].crs != toCRS:
+            gdfList[i] = gdfList[i].to_crs(toCRS)
+
+    # Set desired panel columns prior to merging
+    panelColumns = ['pnlSource', 'nativeID', 'Source', 'area', 'geometry']
+    for i in range(len(gdfList)):
+        gdfList[i] = gdfList[i][panelColumns].copy()
+
+    # Create arrays from panels for each GeoDataFrame
+    arrayGdfList = []
+    for i in range(len(gdfList)):
+        arrayGdf = createArrayFromPanels(gdfList[i], panelArrayBuff, '', '', False)
+        arrayGdfList.append(arrayGdf)
+
+    # Set source columns WITHIN GDF to compare after preferential spatial filtering
+    # pnlSource = gdf_1 for the first GeoDataFrame in the list, and so on
+    for i in range(len(gdfList)):
+        gdfList[i]['tmpPnlSource'] = f'gdf_{i+1}'
+    for i in range(len(arrayGdfList)):
+        arrayGdfList[i]['pnlArrSource'] = f'gdf_{i+1}'
+
+    # Perform preferential spatial filtering on the array gdfs
+    prefArrays = preferentialSpatialFilter(arrayGdfList)
+
+    # Perform spatial join for each original panel GDF → preferred arrays
+    # Keep only panels whose pnlSource matches pnlArrSource
+    filteredPanelsList = []
+    for i in range(len(gdfList)):
+        joined = gpd.sjoin(
+            gdfList[i],
+            prefArrays[['pnlArrSource', 'geometry']],
+            how='left',
+            predicate='intersects'
+        )
+
+        # Keep only rows where the panel's source matches the chosen array source
+        keep = joined[joined['tmpPnlSource'] == joined['pnlArrSource']].copy()
+
+        # Drop sjoin artifacts and pnlArrSource (optionally keep pnlSource)
+        keep = keep.drop(columns=['index_right', 'tmpPnlSource', 'pnlArrSource'], errors='ignore')
+
+        filteredPanelsList.append(keep)
+
+    # Merge all preferentially filtered panels into a single GeoDataFrame
+    mergedPanels = pd.concat(filteredPanelsList, ignore_index=True)
+    mergedPanels = gpd.GeoDataFrame(mergedPanels, geometry='geometry', crs=toCRS)
+    mergedPanels = mergedPanels.reset_index(drop=True)
+
+    # Set the final panelID as 1 through n for the entire dataset
+    mergedPanels['panelID'] = range(1, len(mergedPanels) + 1)
+    return mergedPanels
 
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ GM-SEUS Plotting Functions
 
