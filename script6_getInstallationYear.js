@@ -5,288 +5,430 @@
 //////////////////////////////////////////                                       ////////////////////////////////////////
 /////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 //#####################################################################################################################//
- 
+
 /*
 -- Information --
 Author: Jacob Stid
 Date Created: 11-04-2024
-Date Updated: 01-03-2025
+Date Updated: 12-22-2025
 Contact: stidjaco@msu.edu (Jacob Stid)
 
--- Notes --
-This script is currently set up to export LandTrendr year of detection for one index. 
-Run this script for each desired index, and collect the most common year outside earth engine in python. 
-Currently, steps of 5 only result in 0-2 failed exports per index (which you then have to rerun with a step 1)
+-- What this script does --
+For each polygon feature:
+   - Build a harmonized Landsat collection (ls_harmonize) within the polygon
+   - Compute an annual AOI (zonal) time series for a chosen index (index-agnostic)
+   - Reverse the series (newest->oldest) and compute a single "best" breakpoint
+   - Save properties onto the feature: instYrBP, bstScore, normScore
+
+-- Sources -- 
+GM-SEUS: https://doi.org/10.1038/s41597-025-05862-4
+LandTrendr in GEE: https://doi.org/10.3390/rs10050691
+Backtracking Solar Detection: https://doi.org/10.1016/j.srs.2025.100322
+Tasseled Cap Transformations for OLI/-2: https://doi.org/10.1016/j.srs.2025.100353
 */
 
-exports.doc = 'LandTrendr and Installation Year Extraction';
-//var arrays = ee.FeatureCollection('projects/ee-stidjaco/assets/BigPanel/initialGMSEUS_Arrays')//.filter(ee.Filter.eq('instYr', 2019)); Map.addLayer(arrays); //Map.centerObject(ee.Feature(arrays.filter(ee.Filter.eq("arrayID", 3478)).first()))
+exports.doc = 'Back-tracked Breakpoint + Installation Year Extraction (AOI zonal annual)';
 
-//######################################################################################################## 
+
+//########################################################################################################
 //#                                                                                                    #\\
-//#                                     LANDTRENDR Solar Function                                      #\\
+//#                                       IMPORT geeUtilsStid + ls_harmonize                            #\\
 //#                                                                                                    #\\
 //########################################################################################################
 
-// Set arrays
-//var arrays = ee.FeatureCollection('projects/ee-stidjaco/assets/BigPanel/GMSEUS_Arrays_instYr');
-var arrays = ee.FeatureCollection('projects/ee-stidjaco/assets/BigPanel/GMSEUS_Arrays_instYr_Update');
+// Get geeUtilsStid.js functions
+var geeUtilsStid = require('users/stidjaco/SourceCode:geeUtilsStid.js');
+var ls_harmonize = geeUtilsStid.ls_harmonize_fromComposite;
+var getSpectralIndexBand = geeUtilsStid.getSpectralIndexBand;
 
-// Set subset range (0 to 1000 for full dataset) -- NBD 620 and 930 (by 5)
-var start = 0; 
+//########################################################################################################
+//#                                                                                                    #\\
+//#                                           SET ARRAYS / RUN                                          #\\
+//#                                                                                                    #\\
+//########################################################################################################
+
+// Set arrays (optional; not used in single-feature test)
+var arrays = ee.FeatureCollection('projects/ee-stidjaco/assets/BigPanel/GMSEUS_Arrays_GroundMounted');
+
+// Subset range (0 to 1000 for full dataset)
+var start = 0;
 var end = 1000;
-var step = 25;
+var step = 5;
 
 // Give the run some names
-var runName = "012625" ;
-
-// Select multiple indices (no longer all at once, rapidly reach computational limit)
-var index1 = 'NDPVI';
-var index2 = 'NBD';
-var index3 = 'BR';
-var index4 = 'NDWI';
-var index5 = 'NDVI';
-var index6 = 'EVI';
-var index7 = 'NBR';
-var index8 = 'NDMI';
-var index9 = 'TCA';
-var index10 = 'TCG';
-var index11 = 'TCW';
-var index12 = 'TCB';
-//var index13 = 'NDSI'; // Normalized difference snow index: snow still covers panels, low likelihood of change in annual snow reflectance due to solar alone
-
-/*
-Failed (by 5): 
-NDPVI: -
-NBD: -
-BR: -
-NDWI: -
-NDVI: -
-EVI: -
-NBR: -
-NDMI: -
-TCA: (-)
-TCG: (-)
-TCW: 
-TCB:
-*/
-
-// Set index 
-var index = index12
+var runName = "010526";
 
 // Set seed
-var seed = 15; 
+var seed = 15;
 
-//##########################################################################\\
-/////////////////////////////// Prep-LandTrendr \\\\\\\\\\\\\\\\\\\\\\\\\\\\\\
-//##########################################################################\\
 
-// Define collection parameters
-var startYear = 2005; 
-var endYear = 2024;
-var maskThese = ['cloud'];
+//########################################################################################################
+//#                                                                                                    #\\
+//#                                   BREAKPOINT / SERIES PARAMETERS                                   #\\
+//#                                                                                                    #\\
+//########################################################################################################
 
-// Define boundary years for install year, which we also remove
-var minYear = 2008;
-var maxYear = 2024;
-var nullYear = -9999; // Setting when no detected year of change
+// Choose a band or index to use as an input to the breakpoint
+// Bands: Blue, Green, Red, NIR, SWIR1, SWIR2, Thermal
+// Indices: NDPVI, NBD, BR, NDWI, NDVI, EVI, NBR, NDMI, TCA, TCG, TCW, TCB
+var indexBand = 'TCA';
 
-// Define landtrendr parameters
-var runParams = { 
-  maxSegments:            6,    // 6
-  spikeThreshold:         0.5,  // 0.9
-  vertexCountOvershoot:   2,    // 3
-  preventOneYearRecovery: true, // true
-  recoveryThreshold:      0.33, //  0.25, 1/years to recovery  # should be no recovery so 1/YOD range
-  pvalThreshold:          0.05, // 0.05
-  bestModelProportion:    0.75, // 0.75
-  minObservationsNeeded:  6     // 6
-};
+// Annual series window
+var seriesStartYear = 1985;
+var seriesEndYear   = 2025;
+var seriesStartDate = '-01-01';
+var seriesEndDate   = '-12-31'
 
-// Define change parameters
-var changeParams = {
-  delta:  'loss',  // fastest loss of index values because index flipped in LT source script
-  sort:   'newest', // fastest
-  year:   {checked:true, start:minYear, end:maxYear},
-  mag:    {checked:false, value:50,  operator:'>'}, //, dsnr:true}, // if remove dsnr, value changes to 100
-  dur:    {checked:false, value:1,    operator:'>'}, // specific to year range
-  preval: {checked:false, value:500,  operator:'<'},
-  mmu:    {checked:false, value:3}};
+// Boundary years (will be set to nullYear)
+var minYear  = 2005;
+var maxYear  = 2024;
+var nullYear = -9999;
 
-//############################################################################
-// END INPUTS
-//############################################################################
+// Breakpoint constraints on annual series
+var minSide = 2;  // min years on each side
+var minN    = 6;  // min valid years total (after dropping null years)
+var windowYr= 5;  // number of years to look on either side of an installation year for a breapoint
+var minFracOfRange = 0.2; // require breakpoint jump >= 20% of windowed series range to detect a breakpoint
 
-// Load the LandTrendr.js module
-var ltgee = require('users/stidjaco/BigPanel:SourceCode/LandTrendrSolarIndex.js'); 
+// reduceRegion settings
+var scale = 30;
+var tileScale = 8;
+var bestEffort = true;
+var maxPixels = 1e13;
 
-// Actual Landtrendr function to aquire installation year
-var runSolarLT = function(feature){
-  
-  //############################################################################
-  // END INPUTS
-  //############################################################################
-  
-  // Set aoi
-  var aoi = feature.geometry();
-  
-  //  Consider, if array is in eastern state, set winter time start and end dates, else use full year. 
-  // or just run all three and pick the most recent YOD
+// Scalar reduction across AOI
+var zonalReducer = ee.Reducer.mean();
 
-  // Define base start and end dates and off-growing season dates
-  var startDay = '01-01';
-  var endDay = '12-31'; 
-  //var startDay = '01-01';
-  //var endDay = '03-31';
-  
-  // For each index, run landTrendr
-  var runIndexLT = function(indx){
-    
-    // Set index for changeParams
-    changeParams.index = indx;
-    
-    // run landtrendr
-    var lt = ltgee.runLT(startYear, endYear, startDay, endDay, aoi, indx, [], runParams, maskThese);
-    
-    // get the change map layers
-    var changeImg = ltgee.getChangeMap(lt, changeParams).clip(aoi);
-  
-    // Subset for year of detection
-    var YOD_installed = changeImg.select(['yod']).clip(aoi);
-    
-    //###########################################################################
-    // Extract YOD from shape
-    //###########################################################################
-  
-    // Year of detection mode within renewable boundary (includes nulls where no change detected) -- First Segmentation period
-    var YOD_wnull = YOD_installed.reduceRegion({
-        reducer: ee.Reducer.mode({maxRaw: 1e6}),
-        geometry: aoi,
-        scale: 30,
-        maxPixels: 1e13
-      }).getNumber('yod');
-      
-    // If no LandTrendr detected change within polygon, set to NA
-    var YOD_init = ee.Number(ee.Algorithms.If(YOD_wnull, YOD_wnull, nullYear)).toInt();
+//########################################################################################################
+//#                                                                                                    #\\
+//#                            ANNUAL COMPOSITE -> ZONAL SERIES (LISTS)                                 #\\ -- If we choose to use raw SR or the 8 or 32 day composites, this is the function we will change
+//#                                                                                                    #\\
+//########################################################################################################
 
-    // Remove boundary years, and set nulls
-    var YOD = ee.Number(ee.Algorithms.If(YOD_init.gt(minYear).and(YOD_init.lt(maxYear)), YOD_init, nullYear));
-    return(YOD);
-  };
-  
-  // Run LT for each index and store results
-  var YOD = runIndexLT(index);
-  
-  /*
-  // Run LT for each index and store results
-  var YOD1 = runIndexLT(index1);
-  var YOD2 = runIndexLT(index2);
-  var YOD3 = runIndexLT(index3);
-  var YOD4 = runIndexLT(index4);
-  var YOD5 = runIndexLT(index5);
-  var YOD6 = runIndexLT(index6);
-  var YOD7 = runIndexLT(index7);
-  var YOD8 = runIndexLT(index8);
+/*
+First, decide if index needs to be flipped to observe increase in relation to solar installation
+  - based on index and solar spectral logic, decide indices to invert
+Then, given:
+  - lsAnnualIC: annual composite ImageCollection (1 image per year)
+  - geom: AOI
+  - bandName: one of the 7 renamed bands
+Do:
+  - for each image, reduceRegion over AOI to a scalar
+  - keep only non-null scalars
+  - return Dictionary with:
+      yearSeries: newest -> oldest
+      valSeries:  newest -> oldest
+*/
 
-  // Initialize an empty dictionary to count occurrences
-  var yodCounts = ee.Dictionary({});
+// Function to invert 
+function solarIndexInversion(bandName) {
+  var invertList = ee.List(['EVI', 'NDVI', 'NDMI', 'NBR', 'TCG', 'TCW', 'TCA']);
+  var invert = ee.Number(ee.Algorithms.If(invertList.contains(bandName),-1,1));
+  return invert;
+}
 
-  // Helper function to update counts in yodCounts
-  var updateYODCount = function(yod){yodCounts = yodCounts.set(yod, ee.Number(yodCounts.get(yod, 0)).add(1));  };
+// Function to get dictionary with years and single index/band value across an image collection within an aoi
+function annualCompositeZonalSeries(lsAnnualIC, geom, bandName) {
 
-  // Update counts for each YOD, if they are valid
-  if (YOD1.neq(nullYear)) updateYODCount(YOD1);
-  if (YOD2.neq(nullYear)) updateYODCount(YOD2);
-  if (YOD3.neq(nullYear)) updateYODCount(YOD3);
-  if (YOD4.neq(nullYear)) updateYODCount(YOD4);
-  if (YOD5.neq(nullYear)) updateYODCount(YOD5);
-  if (YOD6.neq(nullYear)) updateYODCount(YOD6);
-  if (YOD7.neq(nullYear)) updateYODCount(YOD7);
-  if (YOD8.neq(nullYear)) updateYODCount(YOD8);
-  //var yodCounts = ee.Dictionary.fromLists(['2015','2016'], [4,4]) // Test to see if function can handle the latest year approach
-  
-  // Helper function to get the most common year, with ties resolved by selecting the largest year
-  var getMostCommonYear = function(countsDict) {
-    // Convert the dictionary into a list of dictionaries with 'year' and 'count' properties
-    var years = countsDict.keys();
-    var counts = countsDict.values();
-    var yearCountPairs = years.map(function(year) {
-      return ee.Dictionary({
-        year: ee.Number.parse(year),  // Convert year from string to number
-        count: countsDict.get(year)   // Get the corresponding count for each year
+  // Ensure predictable order (oldest -> newest), then reverse at the end
+  var ic = ee.ImageCollection(lsAnnualIC)
+    .filterBounds(geom)
+    .sort('system:time_start', true);
+
+  // Convert the ImageCollection to a List so we can map Features safely
+  var imgList = ic.toList(ic.size());
+
+  // Build a FeatureCollection of (year, val)
+  var fc = ee.FeatureCollection(
+    imgList.map(function(el) {
+
+      // Cast list element to Image explicitly
+      var img = ee.Image(el);
+
+      // Extract year from timestamp
+      var y = ee.Number(ee.Date(img.get('system:time_start')).get('year'));
+
+      // Build Index band (either direct band or computed index), then cast to Image
+      var idx = ee.Image(getSpectralIndexBand(img, bandName)).multiply(solarIndexInversion(bandName));
+
+      // AOI scalar
+      var stat = idx.reduceRegion({
+        reducer: zonalReducer,
+        geometry: geom,
+        scale: scale,
+        tileScale: tileScale,
+        bestEffort: bestEffort,
+        maxPixels: maxPixels
       });
-    });
-  
-    // Initialize an empty dictionary to store the most common year and count
-    var initial = ee.Dictionary({year: -1, count: -1});
-  
-    // Use iterate to find the most common year with the largest year in case of a tie
-    var mostCommon = yearCountPairs.iterate(function(current, acc) {
-      current = ee.Dictionary(current);
-      acc = ee.Dictionary(acc);
-  
-      var currentCount = ee.Number(current.get('count'));
-      var accCount = ee.Number(acc.get('count'));
-      var currentYear = ee.Number(current.get('year'));
-      var accYear = ee.Number(acc.get('year'));
-  
-      // Check if the current count is higher than the accumulated count
-      var isMoreCommon = currentCount.gt(accCount);
-      // Check if counts are the same but current year is larger
-      var isSameCountButLargerYear = currentCount.eq(accCount).and(currentYear.gt(accYear));
-  
-      // Update accumulated year and count if either condition is true
-      return ee.Algorithms.If(
-        isMoreCommon.or(isSameCountButLargerYear),
-        current,  // Update to current if it's more common or same count but larger year
-        acc       // Keep accumulated if current doesn't meet conditions
-      );
-    }, initial);
-  
-    // Extract the most common year from the result dictionary
-    return ee.Dictionary(mostCommon).get('year');
-  };
-  
-  // Get the most common year from yodCounts
-  var mostCommonYear = getMostCommonYear(yodCounts);
-  */
-  
-  // Set return variable
-  var mostCommonYear = YOD; 
 
-  // Return the feature with the year set
-  return feature.set({instYrLT: mostCommonYear});
-};
+      // Get the scalar (may be null)
+      var v = stat.get(bandName);
 
-// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ Export
+      return ee.Feature(null, {year: y, val: v});
+    })
+  ).filter(ee.Filter.notNull(['val'])); // drop nulls so we never List.add(null)
 
-// Set export function
-var exportInstYr = function(subset){
-  // Subset array dataset
-  var exportFCTemp = fc.filter(ee.Filter.and(ee.Filter.gte("subset", subset), ee.Filter.lt("subset", ee.Number(subset).add(step))));
+  // Aggregate lists (oldest->newest), then reverse to newest->oldest
+  var years = ee.List(fc.aggregate_array('year')).reverse();
+  var vals  = ee.List(fc.aggregate_array('val')).reverse();
+
+  return ee.Dictionary({yearSeries: years, valSeries: vals});
+}
+
+
+
+//########################################################################################################
+//#                                                                                                    #\\
+//#                               BREAKPOINT (BACK-TRACK, LIST-BASED)                                   #\\
+//#                                                                                                    #\\
+//########################################################################################################
+
+/*
+  Directional + recent-preferred breakpoint (newest->oldest series)
+
+  For each split k:
+    m1 = mean(vals[0:k])   // recent
+    m2 = mean(vals[k:N])   // older
+    Score(k) = max(m1 - m2, 0) * (1 / (k+1)^p) * min(k, supportYears)/supportYears
+      - only counts increases (directional)
+      - favors more recent breaks (smaller k)
+      - downweights breaks with very few recent years
+
+  Pick k with highest Score, set:
+    instYrBP = clamp(years[k] + 1, [minYear, maxYear])
+    bstScore = best Score
+    normScore = bstScore / sqrt(N) (0..1)
+*/
+
+
+function breakpointBacktrack(seriesDict) {
   
-  // Run function
-  var exportFC = exportFCTemp.map(runSolarLT); 
+  // Set series and check number of observations
+  seriesDict = ee.Dictionary(seriesDict);
+  var years = ee.List(seriesDict.get('yearSeries')); // newest->oldest
+  var vals  = ee.List(seriesDict.get('valSeries'));  // newest->oldest
+  var N = ee.Number(vals.size());
+  var enough = N.gte(minN);
+  var bestScoreNull = -1e18;
+
+  // If not enough observations, return nullYear + zero scores
+  var fallback = ee.Dictionary({instYrBP: nullYear, bstScore: 0, normScore: 0});
+  var result = ee.Dictionary(ee.Algorithms.If(enough, (function() {
+
+    // Iterate over k to find best score
+    var init = ee.Dictionary({bestScore: bestScoreNull, bestK: -1});
+    var best = ee.Dictionary(
+      ee.List.sequence(0, N.subtract(1)).iterate(function(k, acc) {
+        k = ee.Number(k);
+        acc = ee.Dictionary(acc);
+        
+        //-------------------------------------------------------- \\
+        // Directional Breakpoint of Windowed Means with Weighting \\
+        //-------------------------------------------------------- \\
+        
+        /* Directional breakpoint. Looks for large difference in 
+        population means before and after each year, considering
+        only increases in image band and weighting for recent 
+        years and mutliple observed years*/
+        
+        // Windowed breakpoint parameters. Looks at a windowed timeseries of (all) years before and after each valid year
+        // recent side (s1) uses the last w obs before k: [k-w, k)
+        // older side (s2) uses the first w obs after k: [k, k+w)
+        function meanSlice(lst, start, end){return ee.Number(ee.List(lst).slice(start, end).reduce(ee.Reducer.mean()));}
+        var w = ee.Number(windowYr);
+        var s1 = k.subtract(w).max(0);
+        var e1 = k;
+        var s2 = k;
+        var e2 = k.add(w).min(N);
+        var m1 = meanSlice(vals, s1, e1);
+        var m2 = meanSlice(vals, s2, e2);
+        var n1 = e1.subtract(s1);
+        var n2 = e2.subtract(s2);
+
+        // Require minSide points before and after breakpoint for all years and window years
+        var okAll = k.gte(minSide).and(k.lte(N.subtract(minSide)));
+        var okWin = n1.gte(minSide).and(n2.gte(minSide));
+        var score = ee.Number(ee.Algorithms.If(okAll.and(okWin), (function() {
+          
+          // Sert recency preference: smaller k gets higher weight
+          var p = 0.25; // try 0.25 (gentle), 0.5 (medium), 1.0 (strong)
+          var recency = ee.Number(1).divide(k.add(1).pow(p));
+          
+          // Support in the recent segment (don’t over-trust 1-year changes). Though, too high support doenst allow for recent years.
+          var supportYears = 3; // saturate after 3 recent years
+          var support = n1.min(supportYears).divide(supportYears);
+          
+          // Directional: only accept increases (solar-like)
+          var diff = m1.subtract(m2); // positive = recent NDPVI higher than old
+          var dirCheck = ee.Number(ee.Algorithms.If(diff.gt(0), diff, bestScoreNull));
+          
+          // Magnitude: Only accept if increase is of suffiecent magnitude 
+          var winVals = ee.List(vals).slice(s1, e2);  // combined local window (recent + older)
+          var winMin  = ee.Number(winVals.reduce(ee.Reducer.min()));
+          var winMax  = ee.Number(winVals.reduce(ee.Reducer.max()));
+          var winRange = winMax.subtract(winMin);
+          var jump = diff.abs();   // magnitude of windowed change
+          var jumpCheck = ee.Number(ee.Algorithms.If(dirCheck.neq(bestScoreNull).and(winRange.gt(0)).and(jump.gte(winRange.multiply(minFracOfRange))), dirCheck, bestScoreNull));
+          
+          // Final: If all checks pass, return weighted score
+          var finalScore = ee.Number(ee.Algorithms.If(jumpCheck.neq(bestScoreNull), jumpCheck.multiply(recency).multiply(support), bestScoreNull))
+          
+          return finalScore;
+        })(), bestScoreNull));
+        
+        // Get best score and best k and if the change passed the magnitude gate. If score is better, return it to dictionary
+        var bestScore = ee.Number(acc.get('bestScore'));
+        var bestK     = ee.Number(acc.get('bestK'));
+        var better = score.gt(bestScore);
+        return ee.Dictionary({
+          bestScore: ee.Number(ee.Algorithms.If(better, score, bestScore)),
+          bestK:     ee.Number(ee.Algorithms.If(better, k, bestK)),
+        });
+
+      }, init)
+    );
+
+    var bestK = ee.Number(best.get('bestK'));
+    var bestScore = ee.Number(best.get('bestScore'));
     
-  // Export the data
-  var folderName = index+'_solInstYrExport_'; 
-  Export.table.toDrive({
-      collection: exportFC,
-      description: descriptionName + subset,
-      fileFormat: 'CSV',
-      folder: folderName + runName,
-      selectors: ['arrayID', 'nativeID', 'tempID', 'instYr', 'instYrLT', 'modType', 'Source'] // '.geo' -- if GeoJSON
+    // Valid detection if score is not null or NaN
+    var detected = bestK
+      .gte(0)
+      .and(bestScore.neq(bestScoreNull))
+      .and(bestScore.eq(bestScore));   // filters NaN
+
+    // Only produce a year if detected
+    var bpYear = ee.Number(ee.Algorithms.If(detected, years.get(bestK), nullYear));
+    var shifted = ee.Number(ee.Algorithms.If(detected, bpYear.add(1), nullYear));
+    
+    // If no detection, keep nullYear (do NOT clamp)
+    var instYrBP = ee.Number(ee.Algorithms.If(
+      shifted.eq(nullYear),
+      nullYear,
+      shifted.max(minYear).min(maxYear)
+    )).toInt();
+
+    // Scores only if detection passed
+    var normScore = ee.Number(ee.Algorithms.If(
+      instYrBP.neq(nullYear),
+      bestScore.divide(N.sqrt()).clamp(0, 1),
+      0
+    ));
+    
+    var bstScore = ee.Number(ee.Algorithms.If(instYrBP.neq(nullYear), bestScore, 0));
+    return ee.Dictionary({instYrBP: instYrBP, bstScore: bstScore, normScore: normScore});
+  })(), fallback));
+
+  return result;
+}
+
+//########################################################################################################
+//#                                                                                                    #\\
+//#                         MAIN: RUN BREAKPOINT PER FEATURE + SAVE PROPERTIES                          #\\
+//#                                                                                                    #\\
+//########################################################################################################
+
+/*
+PSEUDOCODE:
+  For each feature:
+    geom = feature.geometry()
+    lsLocal = ls_harmonize(dateRange, geom)
+    series = annualZonalSeries(lsLocal, geom, index, seriesStartYear, seriesEndYear)
+    stats = breakpointBacktrack(series)
+    set instYrBP, bstScore, normScore on feature
+*/
+var runSolarBreakpoint = function(feature) {
+
+  // Localized Landsat collection for this polygon (memory-friendly)
+  var geom = feature.geometry();
+  var dateRange = ee.DateRange(seriesStartYear + seriesStartDate, seriesEndYear + seriesEndDate)
+  var lsLocal = ls_harmonize(geom, dateRange, 'annual');
+  
+  // Run breakpoint analysis 
+  var seriesDict = annualCompositeZonalSeries(lsLocal, geom, indexBand);
+  var stats = breakpointBacktrack(seriesDict);
+
+  return feature.set({
+    instYrBP: stats.get('instYrBP'),
+    bstScore: stats.get('bstScore'),
+    normScore: stats.get('normScore')
   });
 };
 
-// Add arbitrary random number to subset featureCollection
-var arrays = arrays.randomColumn("subset", seed, "uniform");
-var arrays = arrays.map(function(feature){return feature.set({subset: feature.getNumber("subset").multiply(1000).toInt()})});
+//########################################################################################################
+//#                                                                                                    #\\
+//#                                     EXPORT CHUNKING (OPTIONAL)                                      #\\
+//#                                                                                                    #\\
+//########################################################################################################
 
-// Save to fc variable
+/*
+PSEUDOCODE:
+  - add random subset column (0..999)
+  - for each subset window [subset, subset+step):
+      - filter fc to that window
+      - map runSolarBreakpoint
+      - export table
+*/
+
+arrays = arrays.randomColumn("subset", seed, "uniform");
+arrays = arrays.map(function(feature){return feature.set({subset: feature.getNumber("subset").multiply(1000).toInt()});});
 var fc = arrays;
-var step = step;
+var exportInstYr = function(subset) {
+  var exportFCTemp = fc.filter(ee.Filter.and(
+    ee.Filter.gte("subset", subset),
+    ee.Filter.lt("subset", ee.Number(subset).add(step))
+  ));
+  var exportFC = exportFCTemp.map(runSolarBreakpoint);
+  var folderName = indexBand + '_solInstYrExport_';
+  Export.table.toDrive({
+    collection: exportFC,
+    description: indexBand + '_instYrBPArrays_' + subset,
+    fileFormat: 'CSV',
+    folder: folderName + runName,
+    selectors: ['tmpArrID', 'subArrID', 'nativeID', 'instYr', 'instYrBP', 'bstScore', 'normScore', 'Source']
+  });
+};
 
-// Run export over sequence
-var descriptionName = index+'_instYrArrays_'; var end = ee.Number(end).subtract(step).getInfo(); var sequence = ee.List.sequence({start: start, end: end, step: step}).getInfo();
-var exportInstYr = sequence.map(exportInstYr);
+// Run Batch Export
+var endAdj = ee.Number(end).subtract(step).getInfo();
+var sequence = ee.List.sequence({start: start, end: endAdj, step: step}).getInfo();
+sequence.map(exportInstYr);
+
+
+//########################################################################################################
+//#                                                                                                    #\\
+//#                               ONE-SHOT RUN ON A SINGLE FEATURE(AOI)                                 #\\
+//#                                                                                                    #\\
+//########################################################################################################
+
+// // By drawn polygon
+// var feature = ee.Feature(aoi);
+
+// // By GM-SEUS temporary array ID
+// var feature = ee.Feature(arrays.filter(ee.Filter.eq('tmpArrID', 4652)).first());
+// var aoi = feature.geometry();
+// // Map.addLayer(ee.ImageCollection("USDA/NAIP/DOQQ").filterDate('2018-01-01', '2018-12-31').filterBounds(aoi));
+
+// // Build the annual zonal series directly from annual composites (no annual reducer needed)
+// var ls = ls_harmonize(aoi, ee.DateRange(seriesStartYear+seriesStartDate, seriesEndYear+seriesEndDate), 'annual');
+// var series = annualCompositeZonalSeries(ls, feature.geometry(), indexBand);
+
+// // Run breakpoint
+// var stats = breakpointBacktrack(series);
+
+// // Print outputs
+// print('Series (newest->oldest):', series);
+// print('Breakpoint stats:', stats);
+
+// // Optional: attach to feature to mimic your FC pipeline
+// var outFeature = feature.set({
+//   instYrBP: stats.get('instYrBP'),
+//   bstScore: stats.get('bstScore'),
+//   normScore: stats.get('normScore')
+// });
+
+// print('Feature with properties:', outFeature);
+
+// // Map
+// Map.centerObject(aoi, 15);
+// Map.addLayer(ee.Image.constant(1).clip(aoi), {}, 'AOI');

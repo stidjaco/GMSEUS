@@ -8,6 +8,7 @@ from pathlib import Path
 import warnings
 from shapely.ops import unary_union
 from shapely.geometry import Polygon, mapping
+from sklearn.linear_model import LinearRegression
 
 # Import libraries for plotting
 import matplotlib.pyplot as plt
@@ -120,6 +121,78 @@ def getH3(aoi_geom, res=5, toCRS='EPSG:4326'):
     # Reproject to target CRS
     gdf_hex = gdf_hex.to_crs(toCRS)
     return gdf_hex
+
+# Define a function to calculate the intersection over union (and all related metrics) of any two gdf datasets accounting for multiple potential intersections
+def getIoU(gdf1, gdf2):
+
+    # Explode both datasets into polygons, dissolve overlapping geometries, and explode again into spatially unique polygons
+    gdf1 = gdf1.explode(index_parts=False).reset_index(drop=True)
+    gdf2 = gdf2.explode(index_parts=False).reset_index(drop=True)
+    gdf1 = gdf1.dissolve().reset_index(drop=True)
+    gdf2 = gdf2.dissolve().reset_index(drop=True)
+    gdf1 = gdf1.explode(index_parts=False).reset_index(drop=True)
+    gdf2 = gdf2.explode(index_parts=False).reset_index(drop=True)
+
+    # Drop all resulting polygons less than 45 square meters
+    minArrayArea = 45 # 45 square meters
+    gdf1['origArea_1'] = gdf1['geometry'].area
+    gdf2['origArea_2'] = gdf2['geometry'].area
+    gdf1 = gdf1[gdf1['origArea_1'] > minArrayArea].reset_index(drop=True)
+    gdf2 = gdf2[gdf2['origArea_2'] > minArrayArea].reset_index(drop=True)
+
+    # Add a tempIOUid column to both datasets that is the index
+    gdf1['tempIOUid_1'] = gdf1.index
+    gdf2['tempIOUid_2'] = gdf2.index
+
+    # Spatial join the two datasets, copying the tempIOUid_2 column to the gdf1 dataset
+    intersections = gpd.sjoin(gdf1[['geometry', 'tempIOUid_1']], gdf2[['geometry', 'tempIOUid_2']], how='inner', predicate='intersects')
+
+    # Perform the intersection operation to get the actual intersection geometries
+    intersections['geometry'] = intersections.apply(lambda row: gdf1.loc[row['tempIOUid_1'], 'geometry'].intersection(gdf2.loc[row['tempIOUid_2'], 'geometry']), axis=1)
+
+    # Now dissolve intersections by tempIOUid_1 and tempIOUid_2
+    intersections = intersections.dissolve(by=['tempIOUid_1'], aggfunc='sum').reset_index()
+    intersections = intersections.dissolve(by=['tempIOUid_2'], aggfunc='sum').reset_index()
+
+    # Set an index column
+    intersections['intIndex'] = intersections.index
+
+    # Spatially join intersections to gdf1 and gdf2 saving intIndex
+    gdf1 = gpd.sjoin(gdf1, intersections[['intIndex', 'geometry']], how='left', predicate='intersects')
+    gdf2 = gpd.sjoin(gdf2, intersections[['intIndex', 'geometry']], how='left', predicate='intersects')
+
+    # Drop rows from both where intIndex is NaN
+    gdf1 = gdf1.dropna(subset=['intIndex'])
+    gdf2 = gdf2.dropna(subset=['intIndex'])
+
+    # Drop any columns containing the substring 'index'
+    gdf1 = gdf1.loc[:, ~gdf1.columns.str.contains('index')]
+
+    # Calculate areas and IoU
+    gdf1['areaA'] = gdf1['geometry'].area
+    gdf2['areaB'] = gdf2['geometry'].area
+
+    # Aggregate areas for each intIndex
+    gdf1_agg = gdf1.groupby('intIndex')['areaA'].sum().reset_index()
+    gdf2_agg = gdf2.groupby('intIndex')['areaB'].sum().reset_index()
+
+    # Merge aggregated areas into intersections
+    intersections = intersections.merge(gdf1_agg, on='intIndex', how='left')
+    intersections = intersections.merge(gdf2_agg, on='intIndex', how='left')
+
+    # Calculate intersectionArea and unionArea
+    intersections['intersectionArea'] = intersections['geometry'].area
+    intersections['unionArea'] = (
+        intersections['areaA'] +
+        intersections['areaB'] -
+        intersections['intersectionArea'])
+
+    # Calculate IoU
+    intersections['IoU'] = intersections['intersectionArea'] / intersections['unionArea']
+
+    # Calculate the proportional difference in area between the two areas
+    intersections['propDiff'] = (intersections['areaB'] - intersections['areaA']) / intersections['areaA']
+    return intersections
 
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ GM-SEUS General Functions
 
@@ -346,7 +419,7 @@ def groupArrayByVariableAndProximity(gdf, buffer_distance, variable):
     gdfBuffer['geometry'] = gdfBuffer.buffer(buffer_distance)
 
     # Dissolve by mount
-    gdfBuffer = gdfBuffer.dissolve(by = variable)
+    gdfBuffer = gdfBuffer.dissolve(by = variable, dropna = False).reset_index()
 
     # Explode the dissolved gdf
     gdfBuffer = gdfBuffer.explode(index_parts=False).reset_index(drop = True)
@@ -783,6 +856,275 @@ def preferentialSpatialPanelRowFilter(gdfList):
     # Set the final panelID as 1 through n for the entire dataset
     mergedPanels['panelID'] = range(1, len(mergedPanels) + 1)
     return mergedPanels
+
+# Create a function to calculate the inter-row spacing for each panel in the same array in the direction of the azimuth (for fixed-axis and single-axis arrays) and any direction (for dual-axis arrays)
+def calculateRowSpacing(gdf):
+    # Load the config from the text file
+    config = load_config(os.path.join(wd, r'Code\config.txt'))
+    panelArrayBuff = config['panelArrayBuff']  # Buffer distance between panels and arrays in meters
+    
+    # Set columns
+    azimuth_col = 'rowAzimuth'
+    row_mount_col = 'rowMount'
+    group_col = 'arrayID'
+    geometry_col = 'geometry'
+    panel_col = 'panelID'
+
+    # Initialize with NaN for no results
+    gdf.loc[:, 'rowSpace'] = np.nan
+
+    # For the sake of printing progress, order gdf by increasing arrayID
+    gdf = gdf.sort_values(group_col)
+
+    # Define a function to filter candidates based on azimuth direction
+    def filter_candidates(base_azimuth, candidate_azimuths, row_mount):
+        # Filter candidates based on azimuth direction.
+        if row_mount in ['fixed_axis', 'single_axis']:
+            # Define the valid azimuth directions (forward and backward vectors)
+            forward_azimuth = base_azimuth % 360
+            backward_azimuth = (base_azimuth + 180) % 360
+
+            # Allow some tolerance for alignment (e.g., ±15 degrees)
+            tolerance = 15
+            valid = (
+                (np.abs(candidate_azimuths - forward_azimuth) <= tolerance) |
+                (np.abs(candidate_azimuths - backward_azimuth) <= tolerance)
+            )
+            return valid
+        # For dual_axis, allow all candidates
+        return np.full(len(candidate_azimuths), True)
+
+    # Iterate over each array
+    for arrayID, group in gdf.groupby(group_col):
+        # Because this is an intensive operation, print progress as a percentage. Only print every 1%, based on group_col as a proportion of the number of unique ids in group_col.
+        uniqueIDs = gdf[group_col].nunique()
+        currentID = arrayID
+        if uniqueIDs > 0 and (uniqueIDs // 20) > 0:
+            if currentID % (uniqueIDs // 20) == 0:
+                print(f'{currentID} of {uniqueIDs} ({100 * currentID / uniqueIDs:.0f}%) in progress')
+                pass
+        else:
+            print('Not enough groups to print progress. Will complete shortly.')
+        
+        # Skip groups with only one polygon
+        if len(group) < 2:
+            continue  # Skip groups with only one polygon
+        group = group.copy()  # Copy for memory safety
+
+        # Build a spatial index for the current group
+        spatial_index = group.sindex
+
+        results = []
+        for idx, row in group.iterrows():
+            base_geom = row[geometry_col]
+            base_azimuth = row[azimuth_col]
+            row_mount = row[row_mount_col]
+
+            # Calculate distances to all other geometries in the group within panelArrayBuff * 2 + 1 (21m, just to be sure we capture an panel from the buffer-dissolve-erode method). 
+            base_geom_buffered = base_geom.buffer(panelArrayBuff * 2 + 1)
+
+            # Query the spatial index for geometries within the buffer
+            possible_matches_index = list(spatial_index.intersection(base_geom_buffered.bounds))
+            possible_matches = group.iloc[possible_matches_index]
+
+            # Exclude the current geometry (self-match)
+            candidates = possible_matches[possible_matches.index != idx]
+
+            # Further refine candidates by checking if they fall within the buffered area
+            candidates = candidates[candidates[geometry_col].intersects(base_geom_buffered)]
+
+            # Filter candidates by azimuth direction (valid)
+            if not candidates.empty:
+                # Get the valid candidates
+                valid = filter_candidates(base_azimuth, candidates[azimuth_col], row_mount)
+                valid_candidates = candidates[valid].copy() # Copy for memory safety
+                valid_candidates['distance_to_base'] = valid_candidates[geometry_col].apply(base_geom.distance)
+
+                # Calculate distances to valid candidates
+                if not valid_candidates.empty:
+                    # Use a list comprehension to calculate distances and ensure numeric output
+                    distances = [base_geom.distance(candidate_geom) for candidate_geom in valid_candidates[geometry_col]]
+                    valid_candidates = valid_candidates.copy()  # Avoid SettingWithCopyWarning
+                    valid_candidates['distance_to_base'] = distances
+
+                    # Ensure removed self interseciton and set distance max to panelArrayBuff*2 (20m). If distance to base is greater, set to 20. Copy for memory safety.
+                    valid_candidates = valid_candidates[valid_candidates['distance_to_base'] > 0]
+                    valid_candidates['distance_to_base'] = valid_candidates['distance_to_base'].apply(lambda x: panelArrayBuff * 2 if x > panelArrayBuff * 2 else x)
+
+                    # Get the minimum distance among valid candidates
+                    if not valid_candidates.empty:
+                        min_distance = valid_candidates['distance_to_base'].min()
+                        results.append((idx, min_distance))
+
+        # Update distances in the original GeoDataFrame
+        for idx, min_distance in results:
+            gdf.loc[idx, 'rowSpace'] = min_distance
+
+    return gdf
+
+# Get array mount type from the majority class, or create a mixed class if no majority. Result is fixed_axis, single_axis, dual_axis, or mixed_[unique_classes] if there is not a 90% majority class.
+def getArrayMount(group):
+    counts = group.value_counts()
+    total = counts.sum()
+    # Check if any class makes up more than 75% of the total
+    if (counts / total).max() > 0.75:
+        return counts.idxmax()  # Majority class
+    else:
+        # If mixed, create the "mixed_" label with sorted unique classes that are only the first letter of each class in the group
+        unique_classes = ''.join(sorted({g[0] for g in group.unique()}))
+        return f'mixed_{unique_classes}'
+
+# Get array azimuth from panel-row azimuths depdending on mount. Fixed- and dual-axis arrays have an avgAzimuth of the median of rowAzimuth. Single-axis arrays have an avgAzimuth of the median of rowAzimuth IF rowAzimuth is  + 90 degrees. Mixed arrays should be ignored, but have an avearge azimuth of the median of rowAzimuth.
+def getArrayAzimuth(group):
+    # Get most common mount type in group (fixed_axis, single_axis, dual_axis, mixed_[unique_classes])
+    mount_type = getArrayMount(group['rowMount'])
+    row_azimuth = group['rowAzimuth']
+    if mount_type in ['fixed_axis', 'dual_axis']:
+        # Median for fixed and dual-axis
+        return np.median(row_azimuth)
+    elif mount_type == 'single_axis':
+        # If single-axis, azimuths could be east (90 to 120) or west (240 to 270). Separate by east and west, take the median for each, then convert the west average azimuth to the equivalent southfacing east average azimuth, and get the average of the two.
+        # For example, if west azimuth average is 260 and east azimuth average if 105, the adjusted west azimuth average would be 90+(270-westAvgAzimuth) = 100. The average azimuth would be (100+105)/2 = 102.5
+        east_azimuths = row_azimuth[(row_azimuth >= 90) & (row_azimuth <= 120)]
+        west_azimuths = row_azimuth[(row_azimuth >= 240) & (row_azimuth <= 270)]
+        east_avg = np.median(east_azimuths)
+        west_avg = np.median(west_azimuths)
+        west_avg_adj = 90 + (270 - west_avg)
+        return np.nanmean([east_avg, west_avg_adj])
+    elif mount_type.startswith('mixed'):
+        # Median for mixed arrays (ignore NaN)
+        return np.median(row_azimuth)
+    else:
+        return np.median(row_azimuth)
+    
+# Create a multiple linear regression model between latitude and longitude to predict GCR1 and GCR2 for each mountType and modType
+def spatiallyExtrapolateGCR(df):
+    '''
+    Spatially extrapolate GCR1 and GCR2 values for arrays missing GCR data based on latitude and longitude using 
+    logistic regression for fixed-axis mounts and linear regression for single- and dual-axis mounts.
+    Mount relationship and bounds are based on [Tonita et al., 2023](https://doi.org/10.1016/j.solener.2023.04.038).
+    '''
+    # Define logit and inverse logit functions for GCR scaling between bounds a and b for fixed-axis mounts
+    EPS = 1e-6  # prevents infs in logit
+    def to_logit_gcr(y, a, b, eps=EPS):
+        # scale to (0,1) then logit
+        p = (y - a) / (b - a)
+        p = np.clip(p, eps, 1 - eps)
+        return np.log(p / (1 - p))
+    def from_logit_gcr(z, a, b):
+        # logistic then rescale back to [a,b]
+        p = 1 / (1 + np.exp(-z))
+        return a + (b - a) * p
+
+    # Define mount GCR extrapolation bounds
+    mountBounds = {
+        'fixed_axis':  (0.1, 0.8),
+        'single_axis': (0.1, 0.7),
+        'dual_axis':   (0.2, 0.8),
+        'else':        (0.1, 0.8)}
+
+    # Define PV and CSP mod type groups
+    modGroups = {'PV': ['c-si', 'thin-film'], 'CSP': ['csp']}
+
+    # Get unique mount types
+    mountTypes = df['mount'].unique()
+
+    # Iterate over each mount type -- Select mount data to consdier for spatial extrapolation
+    for mountType in mountTypes:
+        # Get GCR bounds for the current mount type
+        if mountType in mountBounds:
+            a, b = mountBounds[mountType]
+        else:
+            a, b = mountBounds['else']
+        
+        # Filter data for the current mount type
+        # Consider all data if mountType is unknown
+        if mountType == 'unknown':
+            print("Not all arrays contain a mount type. For these, we will use arrays of all mount types for training and prediction.")
+            mountData = df.copy()
+        # Else, if mountType contains 'mixed', set mountType to 'mixed' and filter all df rows with mountType containing 'mixed'
+        elif 'mixed' in mountType:
+            print("Mixed mount type detected. For these, we will use arrays of all mount types for training and prediction.")
+            mountData = df[df['mount'].str.contains('mixed')].reset_index(drop=True)
+        # Else, filter data for the current mount type (fixed_axis, single_axis, or dual_axis)
+        else:
+            print(f"Mount type assessed: {mountType}")
+            # df rows with mountType and gcr is not null
+            mountData = df[(df['mount'] == mountType)].reset_index(drop=True)
+
+        # Iterate over PV and CSP mod type groups
+        for modGroup, modTypes in modGroups.items():
+            # Filter data for the current mod type group
+            modData = mountData[mountData['modType'].isin(modTypes)]
+
+            # Separate into withGCR and withoutGCR subsets (with GCR1 and GCR2)
+            # withGCR = modData[modData['numRow'] > 0].reset_index(drop=True)
+            # withoutGCR = modData[modData['numRow'] <= 0].reset_index(drop=True)
+            withGCR = modData[modData['GCR1'].notna() & modData['GCR2'].notna()].reset_index(drop=True)
+            withoutGCR = modData[modData['GCR1'].isna() | modData['GCR2'].isna()].reset_index(drop=True)
+
+            # Use broader mount type dataset if not enough data for this mod group
+            if withGCR.empty: # or withoutGCR.empty:
+                print(f"- Insufficient data for mount: {mountType}, modGroup: {modGroup}. Using broader dataset.")
+                withGCR = mountData[mountData['numRow'] > 0].reset_index(drop=True)
+                withoutGCR = mountData[mountData['numRow'] <= 0].reset_index(drop=True)
+
+            # Drop rows with missing latitude, longitude, GCR1, or GCR2
+            withGCR = withGCR.dropna(subset=['latitude', 'longitude', 'GCR1', 'GCR2'])
+            withoutGCR = withoutGCR.dropna(subset=['latitude', 'longitude'])
+
+            # Proceed if we have training and prediction data
+            if not withGCR.empty and not withoutGCR.empty:
+                
+                # Get training and prediction data
+                xTrain = withGCR[['latitude', 'longitude']]
+                yTrainGCR1 = withGCR['GCR1']
+                yTrainGCR2 = withGCR['GCR2']
+                xPredict = withoutGCR[['latitude', 'longitude']]
+                
+                # If mountType is fixed_axis, use logit transformation for GCR1 and GCR2
+                if mountType == 'fixed_axis':
+                    # Train regression models for GCR1 and GCR2 with logit transformation
+                    zTrain1 = to_logit_gcr(yTrainGCR1.values, a=a, b=b)
+                    modelGCR1 = LinearRegression().fit(xTrain, zTrain1)
+                    zPred1 = modelGCR1.predict(xPredict)
+                    withoutGCR['GCR1'] = from_logit_gcr(zPred1, a=a, b=b)
+                    zTrain2 = to_logit_gcr(yTrainGCR2.values, a=a, b=b)
+                    modelGCR2 = LinearRegression().fit(xTrain, zTrain2)
+                    zPred2 = modelGCR2.predict(xPredict)
+                    withoutGCR['GCR2'] = from_logit_gcr(zPred2, a=a, b=b)
+                
+                # Else, use straight linear regression for other mount types 
+                else:
+                    # Train regression models for GCR1 and GCR2
+                    modelGCR1 = LinearRegression().fit(xTrain, yTrainGCR1)
+                    modelGCR2 = LinearRegression().fit(xTrain, yTrainGCR2)
+                    withoutGCR['GCR1'] = modelGCR1.predict(xPredict)
+                    withoutGCR['GCR2'] = modelGCR2.predict(xPredict)
+
+                    # Enforce mount-specific bounds
+                    withoutGCR['GCR1'] = withoutGCR['GCR1'].clip(lower=a, upper=b)
+                    withoutGCR['GCR2'] = withoutGCR['GCR2'].clip(lower=a, upper=b)
+
+                # Merge the updated rows back
+                df = df.merge(
+                    withoutGCR[['arrayID', 'GCR1', 'GCR2']],
+                    on='arrayID',
+                    how='left',
+                    suffixes=('', '_new'))
+                df['GCR1'] = df['GCR1_new'].combine_first(df['GCR1'])
+                df['GCR2'] = df['GCR2_new'].combine_first(df['GCR2'])
+                df = df.drop(columns=['GCR1_new', 'GCR2_new'])
+
+    # As a check, set the max GCR1 and GCR2 values from zero to one
+    df['GCR1'] = df['GCR1'].clip(lower=0, upper=1)
+    df['GCR2'] = df['GCR2'].clip(lower=0, upper=1)
+
+    # Round GCR1 and GCR2 to four decimal places
+    df['GCR1'] = df['GCR1'].round(4)
+    df['GCR2'] = df['GCR2'].round(4)
+
+    return df
 
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ GM-SEUS Plotting Functions
 
