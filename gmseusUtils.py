@@ -4,6 +4,7 @@ import pandas as pd
 import numpy as np
 import os
 import glob
+import importlib.util
 from pathlib import Path
 import warnings
 from shapely.ops import unary_union
@@ -50,17 +51,32 @@ def checkFolder(folder):
         os.makedirs(folder)
 
 # Function to load config file
-def load_config(filename):
+def load_config(filename=None):
+    """Load config variables as a dict.
+
+    Defaults to config.py colocated with this module, so callers in any
+    subfolder can just do `gu.load_config()` without path gymnastics.
+    Supports .py (preferred) and .txt (legacy key=value format).
+    """
+    if filename is None:
+        filename = _HERE / 'config.py'
+    filename = Path(filename)
+
+    if filename.suffix == '.py':
+        spec = importlib.util.spec_from_file_location('_gmseus_config', filename)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return {k: v for k, v in vars(module).items() if not k.startswith('_')}
+
+    # Legacy .txt format: one "key=value" per line
     config = {}
     with open(filename, 'r') as f:
         for line in f:
-            # Strip whitespace and split by '='
             key, value = line.strip().split('=')
-            # Try to convert to numeric values if possible
             try:
                 value = float(value) if '.' in value else int(value)
             except ValueError:
-                pass  # Leave as string if not a number
+                pass
             config[key] = value
     return config
 
@@ -321,7 +337,7 @@ def assignMountType(feature):
     # Dual-axis: Any azimuth and the length ratio is less than 2.5
     def classify_mount_type(azimuth, length_ratio):
         # Load the config from the text file and all required variables
-        config = load_config(os.path.join(wd, r'Code\config.txt'))
+        config = load_config()
         lengthRatioThresh = config['lengthRatioThresh']  # If length ratio < 3.0, set to dual_axis or else fixed_axis_diagonal, else single- or fixed-axis
 
         # Check if azimuth is within 60 degrees to to S (180) -- Should never be north
@@ -350,7 +366,7 @@ def assignMountType(feature):
 # Function to check for and remove erroneous geometries in arrays
 def checkArrayGeometries(arrays): 
     # Load the config from the text file
-    config = load_config(os.path.join(wd, r'Code\config.txt'))
+    config = load_config()
     minPanelRowArea = config['minPanelRowArea'] # 15 m2, minimum area for a single panel row from the 1st percentile panel area from Stid et al., 2022
     
     # For a collection of reasons, array boundaries may contain erroneous geometries that result in a near-zero area, linestrings, or points. 
@@ -738,7 +754,7 @@ def iterateFillMetadataByOverlap(gdfAll, gdfMetadataPriorityList, aggConfig):
 def getPanels_method(path):
 
     # Load the config from the text file
-    config = load_config(os.path.join(wd, r'Code\config.txt'))
+    config = load_config()
     gee_crs = config['gee_crs'] # native projection of Google Earth Engine exports
     toCRS = config['to_crs']  # EPSG:6350 NAD83 (2011)
 
@@ -796,7 +812,7 @@ def getPanels_method(path):
 def preferentialSpatialPanelRowFilter(gdfList):
 
     # Load the config from the text file
-    config = load_config(os.path.join(wd, r'Code\config.txt'))
+    config = load_config()
     panelArrayBuff = config['panelArrayBuff']  # Buffer distance between panels and arrays in meters
     toCRS = config['to_crs']  # EPSG:6350 NAD83 (2011)
 
@@ -860,7 +876,7 @@ def preferentialSpatialPanelRowFilter(gdfList):
 # Create a function to calculate the inter-row spacing for each panel in the same array in the direction of the azimuth (for fixed-axis and single-axis arrays) and any direction (for dual-axis arrays)
 def calculateRowSpacing(gdf):
     # Load the config from the text file
-    config = load_config(os.path.join(wd, r'Code\config.txt'))
+    config = load_config()
     panelArrayBuff = config['panelArrayBuff']  # Buffer distance between panels and arrays in meters
     
     # Set columns
