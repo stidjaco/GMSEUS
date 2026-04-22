@@ -144,6 +144,7 @@ Files are within subdirectories **GPKG**, **SHP**, and **CSV**. All data product
 * **GMSEUS_NAIP_Arrays_2025_v2_0**: All array boundaries created by buffer-dissolve-erode method of newly delineated (NAIP) GM-SEUS panel-rows (EPSG:6350),  geopackage, shapefile, and csv
 * **GMSEUS_NAIP_Panels_2025_v2_0**: All newly delineated panel-row boundaries (EPSG:6350), geopackage, shapefile, and csv
 * **GMSEUS_NAIP_PanelsNoQAQC_2025_v2_0**: All newly delineated panel-rows from NAIP imagery without any quality control (EPSG:6350),  geopackage, shapefile, and csv
+* **GMSEUS_RooftopArrays_2025_v2_0**: Arrays from input source datasets reported or determined to be rooftop arrays by intersection with OpenBuildingMap building footprints. Non-exhaustive, intended as an exclusionary resource to maintain GM-SEUS ground-mounted status (EPSG:6350), geopackage, shapefile, and csv
 * **NAIPtrainRF**: Training dataset of 12,000 NAIP training points (2,000 class<sup>-2</sup>) containing class values, spectral index values, the year of NAIP imagery accessed, and point coordinates (WGS84), comma separated values
 * **NAIPclassifyRF**: Random forest classifier trees and weights as output from Google Earth Engine classifier, comma separated values
 * **LabeledImages**: Directory containing image and mask subdirectories with ~17,500 input and target images for deep learning pattern recognition applications, GeoTIFF
