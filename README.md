@@ -115,7 +115,7 @@ Utility Files:
 * `geeUtils.js`:  Helper functions for Google Earth Engine related processing.
 
 General Code Files: All file require the completion of all prior files for inputs. 
-* `config.txt`: Config file containing variable constants used throughout processing.
+* `config.py`: Config file containing variable constants used throughout processing. Loaded via `gu.load_config()` (no arguments — the file is colocated with `gmseusUtils.py`, so it resolves automatically from any working directory). Supports any Python literal type (strings, numbers, lists, dicts) and comments.
 * `script1_getOSMdata.ipynb`: Python file for pulling and processing OSM data for each state. No required inputs.
 * `script2_prepareExistingSolarDB.ipynb`: Python file for compiling and harmonizing existing solar databases.
 * `script3_getSolarPanels.js`: GEE file for acquiring NAIP imagery within array bounds and extracting panel-row boundaries if they exist in available imagery. 
