@@ -1,1 +1,4 @@
-script11_processLULC.ipynb
+modules/dev/
+__pycache__/
+.vscode/
+.claude/
