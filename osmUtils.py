@@ -67,7 +67,7 @@ countryRegionsDict = {
 def getSolarOSMData(regionName, countryName, osmPlanetPBF=None):
 
     # Load the config from the text file and all required variables
-    config = gu.load_config('config.txt')    
+    config = gu.load_config()
     toCRS = config['to_crs']  # EPSG:6350 NAD83 (2011)
     toCRS = f'EPSG:{toCRS}'
 
@@ -308,7 +308,7 @@ def getSolarOSMData(regionName, countryName, osmPlanetPBF=None):
 def processSolarOSMData(regionName, countryName, wd, osmPlanetPBF=None):   
 
     # Load the config from the text file and all required variables
-    config = gu.load_config('config.txt')   
+    config = gu.load_config()
     minPanelRowArea = config['minPanelRowArea'] # 15 m2, minimum area for a single panel row from the 1st percentile panel area from Stid et al., 2022
     maxPanelRowArea = config['maxPanelRowArea'] # 254 m2 95th perccentile for a single panel row from Stid et al., 2022. MSU Solar Carport has max 1890m2
     minNumPanelRows = config['minNumPanelRows'] # 3 panels, minimum number of panels rows to form a ground mounted solar array, definition from Stid et al., 2022
@@ -655,7 +655,7 @@ def getCountrySolarOSMData(countryName, wd, processCountry=True):
     regions = countryRegionsDict[countryName]
 
     # Load the config from the text file and all required variables
-    config = gu.load_config('config.txt')   
+    config = gu.load_config()
     toCRS = config['to_crs']  # EPSG:6350 NAD83 (2011)
     toCRS = f'EPSG:{toCRS}'
 
