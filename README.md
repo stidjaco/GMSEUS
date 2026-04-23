@@ -102,37 +102,99 @@ Spatial context was incorporated using object-based imagery analysis methods, in
 
 All code used in the acquisition and development of this dataset is available in this [Github repository](https://github.com/stidjaco/GMSEUS). Files are ipynb or js files, where js files are JavaScript files intended to be run in the [GEE code editor](https://code.earthengine.google.com/). Files are named in order of operation (e.g., `script1` < `script2`).
 
+### Setup
+
+The utility modules (`gmseusUtils.py`, `osmUtils.py`) are distributed as a local editable package so that any notebook — regardless of where it lives in the folder tree — can `import gmseusUtils as gu` with no `sys.path` manipulation. This is declared by [`pyproject.toml`](./pyproject.toml) at the repository root.
+
+**One-time install, per environment:**
+
+```bash
+# Create the environment from its yml file (first time only)
+mamba env create -f BigPanel.yml
+
+# Activate and install the local package in editable mode
+mamba activate BigPanel
+pip install -e .
+```
+
+Repeat the `mamba activate <envName> && pip install -e .` step for each of the other environments you use (`BigPanelGEE`, `BigPanelOSMPlanet`, `BigPanelTilt`).
+
+**Why `-e` (editable)?** The install creates a pointer to the source files rather than copying them. Any edit you later make to `gmseusUtils.py` or `osmUtils.py` is picked up automatically on the next import — no reinstall required. You only need to re-run `pip install -e .` if `pyproject.toml` itself changes (e.g., a new top-level module is added), or when setting up a brand-new environment.
+
+**Verification.** After installing in any environment:
+
+```bash
+python -c "import gmseusUtils as gu; print(gu.__file__)"
+```
+
+The printed path should point to your local `gmseusUtils.py` in this repository — not to a copy inside `site-packages/`. That confirms the editable link is active.
+
+**Configuration.** All processing constants live in [`config.py`](./config.py). Load them from any script with `config = gu.load_config()` (no arguments); the function resolves the config file relative to the installed `gmseusUtils` location, so it works the same whether you run a notebook from `src/`, `modules/active/`, or any other folder.
+
+### Repository Layout
+
+```
+Code/
+├── src/                         # Main pipeline (script1 → script10)
+├── modules/
+│   ├── active/
+│   │   ├── srcSupp/             # Supplementary/auxiliary scripts
+│   │   ├── createLabeledImages/ # Deep-learning image/mask generation
+│   │   └── digitizeGeoref/      # Manual georeferenced digitization workflow
+│   └── dev/                     # Internal / work-in-progress (gitignored)
+├── images/                      # Figures/graphics used by the README
+├── gmseusUtils.py, osmUtils.py, geeUtils.js   # Utilities
+├── config.py                                   # Processing constants
+├── pyproject.toml                              # Editable-install declaration
+└── *.yml / *.yaml                              # Conda/mamba environments
+```
+
 ### The GM-SEUS open code repository contains the following files
 
-Environment Files: 
-* `BigPanel.yml`: General python environment for most ipynb files. 
-* `BigPanelGEE.yml`: Python environment for `script5` that requires GEE access and cloud repository. 
+Environment Files (repository root):
+* `BigPanel.yml`: General python environment for most ipynb files.
+* `BigPanelGEE.yml`: Python environment for `script5` that requires GEE access and cloud repository.
+* `BigPanelOSMPlanet.yaml`: Python environment for processing the full OSM planet extract used in `script1`.
 * `BigPanelTilt.yml`: Python environment for `script8` that requires pvlib integration and thus a different version of python.
- 
-Utility Files: 
-* `gmseusUtils.py`: General helper functions for all GM-SEUS processing.
-* `osmUtils.py`:  Helper functions for OpenStreetMap related processing. 
-* `geeUtils.js`:  Helper functions for Google Earth Engine related processing.
 
-General Code Files: All file require the completion of all prior files for inputs. 
+Package & Configuration (repository root):
+* `pyproject.toml`: Declares the local utility modules as an editable Python package. See **Setup** above.
 * `config.py`: Config file containing variable constants used throughout processing. Loaded via `gu.load_config()` (no arguments — the file is colocated with `gmseusUtils.py`, so it resolves automatically from any working directory). Supports any Python literal type (strings, numbers, lists, dicts) and comments.
-* `script1_getOSMdata.ipynb`: Python file for pulling and processing OSM data for each state. No required inputs.
-* `script2_prepareExistingSolarDB.ipynb`: Python file for compiling and harmonizing existing solar databases.
-* `script3_getSolarPanels.js`: GEE file for acquiring NAIP imagery within array bounds and extracting panel-row boundaries if they exist in available imagery. 
-* `script4_processSolarPanels.ipynb`: Python file for compiling and quality control of solar panel-row objects. File also creates new array boundaries.
-* `script5_getGroundMounted.ipynb`: Python file for removing rooftop mounted solar arrays and panel-rows. 
-* `script6_getInstallationYear.js`: GEE file for applying LandTrendr temporal segmentation within array boundaries to acquire a year of change.
-* `script7_harmonizeFillAttributes.ipynb`: Python file for preparing and harmonizing all final GM-SEUS attributes (except tilt).
-* `script8_getOptimalTilt.ipynb`: Python file for using _pvlib_ to estimate the optimum tilt angle of fixed-axis (and mixed-axis) arrays.
-* `script9_prepRepository.ipynb`: Python file for preparing the final checks and exports for upload to the Zenodo Repository.
-* `script10_technicalValidation.ipynb`: Python file for processing technical validation of GM-SEUS.
 
-Supplementary Files: 
-* `script7a_validateInstYr.js`: GEE file for manual validation of installation year using available snapshot NAIP, Sentinel-2, and Landsat 7 ETM+ imagery and timeseries. 
+Utility Files (repository root):
+* `gmseusUtils.py`: General helper functions for all GM-SEUS processing.
+* `osmUtils.py`: Helper functions for OpenStreetMap related processing.
+* `geeUtils.js`: Helper functions for Google Earth Engine related processing.
+
+Main Pipeline — `src/` — all files require the completion of all prior files for inputs:
+* `src/script1_getOSMdata.ipynb`: Python file for pulling and processing OSM data for each state. No required inputs.
+* `src/script2_prepareExistingSolarDB.ipynb`: Python file for compiling and harmonizing existing solar databases.
+* `src/script3_getSolarPanels.js`: GEE file for acquiring NAIP imagery within array bounds and extracting panel-row boundaries if they exist in available imagery.
+* `src/script4_processSolarPanels.ipynb`: Python file for compiling and quality control of solar panel-row objects. File also creates new array boundaries.
+* `src/script5_getGroundMounted.ipynb`: Python file for removing rooftop mounted solar arrays and panel-rows.
+* `src/script6_getInstallationYear.js`: GEE file for applying LandTrendr temporal segmentation within array boundaries to acquire a year of change.
+* `src/script7_harmonizeFillAttributes.ipynb`: Python file for preparing and harmonizing all final GM-SEUS attributes (except tilt).
+* `src/script8_getOptimalTilt.ipynb`: Python file for using _pvlib_ to estimate the optimum tilt angle of fixed-axis (and mixed-axis) arrays.
+* `src/script9_prepRepository.ipynb`: Python file for preparing the final checks and exports for upload to the Zenodo Repository.
+* `src/script10_technicalValidation.ipynb`: Python file for processing technical validation of GM-SEUS.
+
+Supplementary Modules — `modules/active/srcSupp/` — auxiliary/optional scripts used alongside the main pipeline:
+* `script7a_validateInstYr.js`: GEE file for manual validation of installation year using available snapshot NAIP, Sentinel-2, and Landsat 7 ETM+ imagery and timeseries.
 * `scriptTrainRF.js`: GEE file for compiling and assessing the new landcover training dataset to classify solar panel-rows in NAIP imagery.
-* `scriptGetLabeledImages.js`: GEE file for preparing and exporting 4-band NAIP and a GM-SEUS panel-row burned in imagery (as a 5th band) over an array to generate labeled imagery. 
-* `script_createLabeledImages.ipynb`: Python file for taking in whole labeled images from `scriptGetLabeledImages.txt` and splitting into 256 x 256 pixel tiled images and masks. 
 * `scriptPlot_maps.ipynb`: Python file for printing and export relevant result maps.
+
+Labeled Imagery for Deep Learning — `modules/active/createLabeledImages/`:
+* `script_getLabeledImages.js`: GEE file for preparing and exporting 4-band NAIP and a GM-SEUS panel-row burned in imagery (as a 5th band) over an array to generate labeled imagery.
+* `script_createLabeledImages.ipynb`: Python file for taking in whole labeled images from `script_getLabeledImages.js` and splitting into 256 × 256 pixel tiled images and masks.
+
+Manual Digitization Workflow — `modules/active/digitizeGeoref/` — scripts used to manually georeference and digitize arrays and panel-rows for database points that lack boundary geometry (GM-SEUS v1.1 digitization effort):
+* `script_digitizeGeorefArrays.js`: GEE file for manually georeferencing and digitizing array bounds around existing point-only database entries.
+* `script_digitizeGeorefArraysInSPIRE.js`: Variant of the digitization script for the SPIRE context, reusing existing array shapes when available.
+* `script_compileDigitizeGeorefArrays.js`: GEE file for compiling the digitized array outputs from the sessions above.
+* `script_digitizePanelRows.js`: GEE file for manually digitizing panel-row bounds within GM-SEUS arrays that lack panel-row geometry.
+* `script_prepareNewDigPanels.ipynb`: Python file for preparing the newly digitized panel-rows (and corresponding arrays) for Zenodo and OpenStreetMap upload.
+
+Development — `modules/dev/` — gitignored; used for internal work-in-progress that is intentionally not published to the repo (e.g., `script11_processLULC.ipynb`).
   
 ## Dataset Description: 
 Files are within subdirectories **GPKG**, **SHP**, and **CSV**. All data products are available in the Zenodo Repository. All input datasets can be downloaded from source files described in the associated paper, at the top of this document, at the top of `script2`, and in the Zenodo data README. All intermediate products are available upon request, and are automatically generated in the processing of the code repo. Geospatial files in the final database are provided as shapefiles, geopackages, and comma separated values. 
