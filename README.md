@@ -110,7 +110,7 @@ The utility modules (`gmseusUtils.py`, `osmUtils.py`) are distributed as a local
 
 ```bash
 # Create the environment from its yml file (first time only)
-mamba env create -f BigPanel.yml
+mamba env create -f envFiles/BigPanel.yml
 
 # Activate and install the local package in editable mode
 mamba activate BigPanel
@@ -142,29 +142,29 @@ Code/
 │   │   ├── createLabeledImages/ # Deep-learning image/mask generation
 │   │   └── digitizeGeoref/      # Manual georeferenced digitization workflow
 │   └── dev/                     # Internal / work-in-progress (gitignored)
+├── envFiles/                    # Conda/mamba environment specs (*.yml / *.yaml)
+├── utils/                       # Utility modules (gmseusUtils.py, osmUtils.py, geeUtils.js)
 ├── images/                      # Figures/graphics used by the README
-├── gmseusUtils.py, osmUtils.py, geeUtils.js   # Utilities
-├── config.py                                   # Processing constants
-├── pyproject.toml                              # Editable-install declaration
-└── *.yml / *.yaml                              # Conda/mamba environments
+├── config.py                    # Processing constants (project root)
+└── pyproject.toml               # Editable-install declaration
 ```
 
 ### The GM-SEUS open code repository contains the following files
 
-Environment Files (repository root):
-* `BigPanel.yml`: General python environment for most ipynb files.
-* `BigPanelGEE.yml`: Python environment for `script5` that requires GEE access and cloud repository.
-* `BigPanelOSMPlanet.yaml`: Python environment for processing the full OSM planet extract used in `script1`.
-* `BigPanelTilt.yml`: Python environment for `script8` that requires pvlib integration and thus a different version of python.
+Environment Files — `envFiles/`:
+* `envFiles/BigPanel.yml`: General python environment for most ipynb files.
+* `envFiles/BigPanelGEE.yml`: Python environment for `script5` that requires GEE access and cloud repository.
+* `envFiles/BigPanelOSMPlanet.yaml`: Python environment for processing the full OSM planet extract used in `script1`.
+* `envFiles/BigPanelTilt.yml`: Python environment for `script8` that requires pvlib integration and thus a different version of python.
 
 Package & Configuration (repository root):
 * `pyproject.toml`: Declares the local utility modules as an editable Python package. See **Setup** above.
 * `config.py`: Config file containing variable constants used throughout processing. Loaded via `gu.load_config()` (no arguments — the file is colocated with `gmseusUtils.py`, so it resolves automatically from any working directory). Supports any Python literal type (strings, numbers, lists, dicts) and comments.
 
-Utility Files (repository root):
-* `gmseusUtils.py`: General helper functions for all GM-SEUS processing.
-* `osmUtils.py`: Helper functions for OpenStreetMap related processing.
-* `geeUtils.js`: Helper functions for Google Earth Engine related processing.
+Utility Files — `utils/`:
+* `utils/gmseusUtils.py`: General helper functions for all GM-SEUS processing. Exposed as a top-level Python module via `pyproject.toml` (so notebooks do `import gmseusUtils as gu` with no folder prefix).
+* `utils/osmUtils.py`: Helper functions for OpenStreetMap related processing. Exposed the same way: `import osmUtils`.
+* `utils/geeUtils.js`: Helper functions for Google Earth Engine related processing. Pasted/referenced in GEE editor scripts — not part of the Python package.
 
 Main Pipeline — `src/` — all files require the completion of all prior files for inputs:
 * `src/script1_getOSMdata.ipynb`: Python file for pulling and processing OSM data for each state. No required inputs.
