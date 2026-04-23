@@ -34,11 +34,19 @@ from rasterio.features import rasterize
 # from matplotlib.colors import ListedColormap, Normalize
 # import matplotlib.colors as mcolors
 
-# directory where gmseusUtils.py lives
+# Directory where gmseusUtils.py lives.
 _HERE = Path(__file__).resolve().parent
 
-# one level up = your project root
-wd = _HERE.parent
+# Project root: walk up from this file until we find pyproject.toml (the
+# marker file at the repo root). Robust to restructuring — utils can live
+# anywhere under the project root and this still resolves correctly.
+_PROJECT_ROOT = next(
+    (p for p in [_HERE, *_HERE.parents] if (p / 'pyproject.toml').exists()),
+    _HERE.parent,
+)
+
+# Public alias for the project root (kept for notebooks that do `wd = gu.wd`).
+wd = _PROJECT_ROOT
 
 # Set pandas option to avoid future warning about downcasting
 pd.set_option('future.no_silent_downcasting', True)
@@ -54,12 +62,12 @@ def checkFolder(folder):
 def load_config(filename=None):
     """Load config variables as a dict.
 
-    Defaults to config.py colocated with this module, so callers in any
-    subfolder can just do `gu.load_config()` without path gymnastics.
-    Supports .py (preferred) and .txt (legacy key=value format).
+    Defaults to config.py at the project root (detected via pyproject.toml),
+    so callers in any subfolder can just do `gu.load_config()` without path
+    gymnastics. Supports .py (preferred) and .txt (legacy key=value format).
     """
     if filename is None:
-        filename = _HERE / 'config.py'
+        filename = _PROJECT_ROOT / 'config.py'
     filename = Path(filename)
 
     if filename.suffix == '.py':

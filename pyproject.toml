@@ -10,3 +10,6 @@ requires-python = ">=3.10"
 
 [tool.setuptools]
 py-modules = ["gmseusUtils", "osmUtils"]
+
+[tool.setuptools.package-dir]
+"" = "utils"
