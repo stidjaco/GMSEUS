@@ -106,6 +106,21 @@ def getH3(aoi_geom, res=5, toCRS='EPSG:4326'):
     res     : H3 resolution (int)
 
     Returns: GeoDataFrame with columns ['h3_index', 'geometry'] in EPSG:4326.
+
+    Usage: 
+    # Load AOI
+    aoi = gpd.read_file(aoiPath)
+
+    # Get H3 res 5 polygons
+    h3_gdf = gu.getH3(aoi, res=4, toCRS=toCRS)
+
+    # Save to a shapefile
+    h3_gdf.to_file(os.path.join(derivedTemp_path, r'NA_AOI_h3res4.shp'), driver='ESRI Shapefile')
+
+    # Plot AOI H3 hexagons, small white border with dark grey theme fill
+    fig, ax = plt.subplots(figsize=(8, 8))
+    h3_gdf.plot(ax=ax, edgecolor='white', facecolor=darkGreyTheme, linewidth=0.1)
+    plt.show()
     """
     # Import h3 inside function to avoid hard dependency if not used
     import h3
@@ -1298,3 +1313,31 @@ def process_multiple_tif_files(tif_folder, output_folder, dpi=600):
         rgbTemp = 'trueColor' in tif_file
         output_png = output_pngs[i]
         convert_tif_to_png_with_scalebar(tif_file, output_png, dpi=dpi, add_scalebar=(i == 0), rgb=rgbTemp)  # Add scale bar to the first file
+
+# ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ GM-SEUS LULC Module Functions
+
+# Function to map each element in an array to the corresponding GMSEUS class
+def mapClass(npArray, schema, className):
+    # Ensure schema lookup dictionary for faster mapping
+    value_to_class = schema.set_index('Value')[className].to_dict()
+
+    # Convert input array to NumPy array if it's not already
+    npArray = np.asarray(npArray, dtype=object)  # Keep object dtype to avoid coercion issues
+
+    # Map values, handling missing entries safely
+    return np.array([value_to_class.get(val, np.nan) for val in npArray], dtype=object)
+
+# Function to classify the most commen land use type (mode) based on 5 years of data
+def mostCommonLandUse(npArray):
+    # Set NaN value
+    lulcNaN = np.nan
+    # Get the mode of the array, ignoring NaN values. If only one value is present, it will be returned.
+    mode = pd.Series(npArray).mode(dropna=True)
+    # Drop "nan" and NaN from the mode series
+    mode = mode[mode != 'nan']
+    mode = mode[mode.notna()]
+    # If mode is empty, return NaN
+    if mode.empty:
+        return lulcNaN
+    else:
+        return mode[0]
