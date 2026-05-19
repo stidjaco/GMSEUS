@@ -1,0 +1,1712 @@
+---
+title: "LookingatGMSEUS"
+author: "Mia Dagati"
+date: "2025-09-18"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+library(tidyverse)
+library(dplyr)
+library(sf)
+library(tigris)
+library(leaflet)
+library(plotly)
+library(terra)
+library(viridis) 
+
+options(tigris_use_cache = TRUE)
+
+#     Loading data 
+array_file <- "C:/Users/miada/Downloads/Energy Lab/GMSEUS_Arrays_Final_2.0.csv"
+panel_file <- "C:/Users/miada/Downloads/Energy Lab/GMSEUS_Panels_Final_2.0.csv"
+
+array_df <- read_csv(array_file) %>%
+  mutate(
+    Original_df = "Array",
+    capMW       = capMWDC,      # edited due to differing variable names for version 1 and 2 
+    capMWest    = capMWDCest    # DC requested for MW cap use
+  )
+
+panel_df <- read_csv(panel_file) %>%
+  mutate(Original_df = "Panel")
+```
+
+
+## 1. Merge Array + Panel Data
+
+```{r merge-array-panel}
+# Replace sentinel -9999 values with NA across panel measurement columns
+panel_summary <- panel_df %>%
+  mutate(across(c(rowWidth, rowLength, rowAzimuth, rowSpace), ~na_if(., -9999))) %>%
+  group_by(arrayID) %>%
+  # Flag readings >3 SD from each array's own mean as outliers and set to NA
+  # This prevents a single bad reading from skewing the per-array average
+  mutate(
+    outlier_w = abs(rowWidth  - mean(rowWidth,  na.rm = TRUE)) > 3 * sd(rowWidth,  na.rm = TRUE),
+    outlier_l = abs(rowLength - mean(rowLength, na.rm = TRUE)) > 3 * sd(rowLength, na.rm = TRUE),
+    outlier_s = abs(rowSpace  - mean(rowSpace,  na.rm = TRUE)) > 3 * sd(rowSpace,  na.rm = TRUE),
+    rowWidth  = ifelse(outlier_w, NA_real_, rowWidth),
+    rowLength = ifelse(outlier_l, NA_real_, rowLength),
+    rowSpace  = ifelse(outlier_s, NA_real_, rowSpace)
+  ) %>%
+  # Collapse panel-level rows to one summary row per array
+  summarise(
+    avgRowWidth   = mean(rowWidth,   na.rm = TRUE),
+    avgRowLength  = mean(rowLength,  na.rm = TRUE),
+    avgRowAzimuth = mean(rowAzimuth, na.rm = TRUE),
+    avgRowSpace   = mean(rowSpace,   na.rm = TRUE),
+    nRows         = n(),
+    .groups       = "drop"
+  )
+
+# Replace sentinel -9999 values in array-level data, then join panel summary
+array_based_df <- array_df %>%
+  mutate(across(c(avgWidth, avgLength, avgSpace, GCR1, GCR2, tilt, instYrEst), ~na_if(., -9999))) %>%
+  left_join(panel_summary, by = "arrayID")
+```
+
+
+## 2. Continental US Geometries for Visualizations
+#### Used Throughout Analysis 
+
+```{r cont-us-geometry}
+# Download 2024 US state boundaries (cartographic, cb = TRUE = simplified coastlines)
+#
+# Filter out non-contiguous states and territories:
+non_cont_US <- c("02","15","72","66","78","69","60")   #places like Alaska, islands etc
+
+cont_US <- states(cb = TRUE, year = 2024) %>%
+  st_transform(4326) %>%                  # set to standard lat/lon CRS before filtering
+  filter(!STATEFP %in% non_cont_US)       # keep contiguous US only
+```
+
+```{r Shared Spatial Setup}
+crs_proj <- "EPSG:5070"  # standard CRS value to minimize distortion for contiguous US maps
+
+# Build two versions of the US boundary in the projected CRS:
+us_p     <- st_union(st_geometry(cont_US)) |> st_as_sf() |> st_transform(crs_proj)   # single dissolved polygon (used for outer border on maps)
+states_p <- st_transform(cont_US, crs_proj)                                          # individual state polygons (used for internal state boundaries)
+
+# Raster and kernel parameters for spatial density estimation
+cellsize_km  <- 5    # resolution of the output raster grid (5 km x 5 km cells)
+bandwidth_km <- 70   # Gaussian smoothing bandwidth which controls how far influence spreads 
+
+cellsize_m <- cellsize_km  * 1000  # convert to meters to match EPSG:5070 units
+bw_m       <- bandwidth_km * 1000
+
+# Create an empty raster template covering the contiguous US extent
+r_template <- rast(
+  ext        = ext(vect(us_p)),
+  resolution = cellsize_m,
+  crs        = crs_proj
+)
+
+# Build a 2D Gaussian kernel for density smoothing (used later)
+rad_cells <- ceiling(bw_m * 3 / cellsize_m)   # defines how many cells out the kernel extends (3 standard deviations)
+xy        <- seq(-rad_cells, rad_cells)
+g_kernel  <- outer(xy, xy, function(xi, yi)   # g_kernel is normalized so all weights sum to 1 (no artificial inflation of values)
+  exp(-(xi^2 + yi^2) * cellsize_m^2 / (2 * bw_m^2)))
+g_kernel  <- g_kernel / sum(g_kernel)
+```
+
+
+
+## 3. Module Type Summary Across US
+
+```{r modtype summary: Goldilocks Explination for CdTe Selection for project}
+modType_summary <- array_df %>%
+  group_by(modType) %>%
+  summarise(
+    nArrays    = n(),
+    totalCapMW = sum(capMW, na.rm = TRUE),
+    .groups    = "drop"
+  ) %>%
+  mutate(avgCapMW = totalCapMW / nArrays) %>%
+  arrange(desc(avgCapMW)) %>%
+  mutate(modType = factor(modType, levels = modType))  # preserve sort order
+
+ggplot(modType_summary, aes(x = modType, y = avgCapMW, fill = modType)) +
+  geom_col(width = 0.65, show.legend = FALSE) +
+  geom_text(aes(label = paste0(round(avgCapMW, 1), " MW\nn = ", nArrays)),
+            vjust = -0.5, size = 3.2, color = "grey30") +
+  scale_fill_manual(values = c(
+    "thin-film" = "navy",
+    "c-si"      = "#96CDCD",
+    "csp"       = "dodgerblue"
+  )) +
+  scale_y_continuous(expand = expansion(mult = c(0, 0.15))) +
+  labs(
+    title    = "Average Capacity per Array by Module Type",
+    subtitle = "Sorted by average capacity; labels show avg MW and array count",
+    x        = "Module Type",
+    y        = "Average Capacity per Array (MW)"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(
+    plot.title      = element_text(face = "bold", size = 13),
+    plot.subtitle   = element_text(size = 10, color = "grey40"),
+    panel.grid.major.x = element_blank(),
+    panel.grid.minor   = element_blank(),
+    axis.text.x        = element_text(size = 11)
+  )
+```
+
+
+## 4. Map — All Arrays (Continental US)
+
+```{r map-all-arrays}
+array_based_sf <- array_based_df %>%
+  filter(is.finite(longitude), is.finite(latitude)) %>%
+  mutate(mod_label = case_when(
+    modType == "c-si"      ~ "Crystalline Silicon",
+    modType == "thin-film" ~ "Thin Film",
+    modType == "csp"       ~ "Concentrated Solar Power (CSP)"
+  )) %>%
+  st_as_sf(coords = c("longitude", "latitude"), crs = 4326) %>%
+  st_transform("EPSG:5070")
+
+ggplot() +
+  geom_sf(data = states_p, fill = "grey95", color = "black", linewidth = 0.15) +
+  geom_sf(data = us_p,     fill = NA,       color = "black", linewidth = 0.40) +
+  # Plot non-thin-film arrays first so thin-film renders on top and is not obscured as we want it to be highlighted here
+  geom_sf(data = array_based_sf %>% filter(modType != "thin-film"),
+          aes(color = mod_label), size = 1.5, alpha = 0.6) +
+  geom_sf(data = array_based_sf %>% filter(modType == "thin-film"),
+          aes(color = mod_label), size = 1.5, alpha = 0.8) +
+  scale_color_manual(
+    values = c("Crystalline Silicon"          = "#96CDCD",
+               "Thin Film"                    = "navy",
+               "Concentrated Solar Power (CSP)" = "dodgerblue"),
+    name = "Module Type"
+  ) +
+  coord_sf(crs = "EPSG:5070", expand = FALSE) +
+  theme_void() +
+  theme(
+    plot.title      = element_text(face = "bold", size = 13),
+    plot.subtitle   = element_text(size = 10, color = "grey40"),
+    legend.position = "bottom"
+  ) +
+  labs(
+    title    = "Solar Arrays by Module Type",
+    subtitle = "Crystalline silicon, thin-film, and CSP installations across the contiguous US"
+  )
+```
+
+
+## 5. Thin-Film Module Type Selection and Series Prediction
+```{r series-year-identification-and-boundary-highlight-cases}
+# Assigns each installation year to its corresponding First Solar module series
+# Based on First Solar's known production timeline for Series 2 through Series 7
+assign_series <- function(y) {
+  case_when(
+    y >= 2006 & y <= 2013 ~ "Series 2",
+    y >= 2014 & y <= 2016 ~ "Series 3",
+    y >= 2017 & y <= 2019 ~ "Series 4",
+    y == 2020             ~ "Series 6",
+    y >= 2021 & y <= 2022 ~ "Series 6",
+    y >= 2023             ~ "Series 7",
+    TRUE                  ~ "Unknown"
+  )
+}
+
+# Flags years that fall near a series transition boundary
+# These arrays may contain a mix of two series and are flagged for sensitivity analysis
+assign_boundary <- function(y) {
+  case_when(
+    y %in% c(2012, 2013)       ~ "S2-S3",
+    y %in% c(2015, 2016)       ~ "S3-S4",
+    y %in% c(2018, 2019, 2020) ~ "S4-S6",
+    y == 2022                  ~ "S6-S7",
+    TRUE                       ~ NA_character_
+  )
+}
+```
+
+
+```{r thin-film-series-assignment}
+# Filter to thin-film arrays only and append with derived columns
+ 
+thin_film_df <- array_based_df %>%
+  filter(modType == "thin-film") %>%
+  mutate(
+    capMW_total      = coalesce(capMW, capMWest),  # uses reported capacity, falling back to estimated if missing
+    STATEFP          = str_pad(as.character(STATEFP), 2, pad = "0"), # zero-padded to 2 digits for consistent joining with Census geometries- based on recommendation 
+    
+    predicted_series = assign_series(instYr),    # First Solar series assigned from installation year
+    boundary_case    = assign_boundary(instYr),  # flags arrays installed near a series transition year
+    yr_confidence    = case_when(
+      abs(instYr - instYrEst) <= 1 ~ "high",     # confidence in instYr based on agreement with instYrEst - need to go back and edit based on new understanding of instYr variable
+      abs(instYr - instYrEst) <= 3 ~ "medium",
+      TRUE                         ~ "low"
+    )
+  ) %>%
+  # Join state names from Census geometry using zero-padded STATEFP
+  left_join(
+    cont_US %>% st_set_geometry(NULL) %>%
+      transmute(STATEFP = str_pad(as.character(STATEFP), 2, pad = "0"), state_name = NAME),
+    by = "STATEFP"
+  )
+
+# Quick check on how many arrays fall into each confidence tier
+table(thin_film_df$yr_confidence)
+
+# Set series as an ordered factor so plots and tables display in chronological order
+series_levels <- c("Series 2", "Series 3", "Series 4", "Series 6", "Series 7")
+thin_film_df <- thin_film_df %>%
+  mutate(predicted_series = factor(predicted_series, levels = series_levels))
+```
+
+## 6. Map — Thin-Film Series (Continental US)
+
+```{r Leaflet: map thin-film series}
+# Color palette mapping each First Solar series to a consistent color
+# Used across all thin-film maps for visual continuity
+series_colors <- c(
+  "Series 2" = "lightgreen",
+  "Series 3" = "#5AAE61",
+  "Series 4" = "dodgerblue",
+  "Series 6" = "orchid",
+  "Series 7" = "#4B0082"
+)
+# leaflet-compatible factor palette; brown flags any arrays with NA series (Unknown)
+series_palette <- colorFactor(
+  palette  = unname(series_colors),
+  levels   = names(series_colors),
+  na.color = "brown"
+)
+
+# Interactive map of thin-film arrays colored by predicted First Solar series
+# Popups show full array metadata including year confidence and boundary case status
+leaflet(thin_film_df,
+        options = leafletOptions(zoomSnap = 0.15, zoomDelta = 0.25, wheelPxPerZoomLevel = 120)) %>%
+  addProviderTiles("CartoDB.Positron") %>%
+  addPolygons(data = cont_US, color = "black", weight = 1, fill = FALSE) %>%
+  addCircleMarkers(
+    lng   = ~longitude,
+    lat   = ~latitude,
+    color = ~series_palette(predicted_series),
+    popup = ~paste0(
+      "<b>Array ID:</b> ",          arrayID,          "<br>",
+      "<b>Installation Year:</b> ", instYr,           "<br>",
+      "<b>Est. Year (LT):</b> ",    instYrEst,        "<br>",
+      "<b>Year Confidence:</b> ",   yr_confidence,    "<br>",
+      "<b>Predicted Series:</b> ",  predicted_series, "<br>",
+      "<b>Boundary Case:</b> ",     ifelse(is.na(boundary_case), "No", boundary_case), "<br>",
+      "<b>Capacity (MW):</b> ",     capMW_total,      "<br>",
+      "<b>Coordinates:</b> ",       latitude, ", ", longitude
+    ),
+    radius = 4, stroke = FALSE, fillOpacity = 1
+  ) %>%
+  addLegend("bottomright", pal = series_palette, values = ~predicted_series,
+            title = "Thin-Film Series") %>%
+  # Nudges legend away from the map edge for cleaner rendering in HTML output
+  htmlwidgets::onRender("
+    function(el, x) {
+      $('.leaflet-bottom.leaflet-right').css('bottom','10px').css('right','45px');
+    }
+  ")
+```
+```{r}
+# Convert thin-film arrays to sf and reproject to Albers Equal Area (EPSG:5070)
+thin_film_sf <- thin_film_df %>%
+  filter(is.finite(longitude), is.finite(latitude)) %>%
+  st_as_sf(coords = c("longitude", "latitude"), crs = 4326) %>%
+  st_transform("EPSG:5070")
+
+# Static map of thin-film arrays colored by predicted First Solar series
+ggplot() +
+  geom_sf(data = states_p, fill = "grey95", color = "black", linewidth = 0.15) +
+  geom_sf(data = us_p,     fill = NA,       color = "black", linewidth = 0.40) +
+  geom_sf(data = thin_film_sf,
+          aes(color = predicted_series), size = 1.9, alpha = 0.9) +
+  scale_color_manual(
+    values = series_colors,  # shared palette defined above for cross-map consistency
+    name   = "Thin-Film Series",
+    drop   = FALSE           # keep all series levels in legend even if absent in data
+  ) +
+  coord_sf(crs = "EPSG:5070", expand = FALSE) +
+  theme_void() +
+  theme(
+    plot.title      = element_text(face = "bold", size = 13),
+    plot.subtitle   = element_text(size = 10, color = "grey40"),
+    legend.position = "bottom"
+  ) +
+  labs(
+    title    = "Thin-Film Solar Arrays by Predicted First Solar Series",
+    subtitle = "Series assigned from installation year of installation"
+  )
+```
+
+
+
+## 7. Module Count Estimation
+
+```{r thin-film module count estimation}
+# Series-level fallback module areas (m²) from First Solar spec sheets
+# W = short edge, L = long edge per GM-SEUS convention
+# Module area = W * L
+module_sizes <- c(
+  "Series 2" = 0.72,  # 1.200m x 0.600m
+  "Series 3" = 0.72,  # 1.200m x 0.600m
+  "Series 4" = 0.72,  # 1.200m x 0.600m
+  "Series 6" = 2.47,  # 1.232m x 2.009m
+  "Series 7" = 2.80   # 1.216m x 2.300m
+)
+
+# Reshape to a dataframe for joining onto thin_film_df by predicted_series
+module_sizes_df <- tibble(
+  predicted_series = names(module_sizes),
+  module_size_m2   = module_sizes
+)
+
+thin_film_df <- thin_film_df %>%
+  mutate(predicted_series = as.character(predicted_series)) %>%  # drop factor before join
+  left_join(module_sizes_df, by = "predicted_series") %>%
+  mutate(
+    # Three-tier module area hierarchy:
+    # 1) Panel geometry  — outlier-cleaned avgRowWidth/Length from panel join
+    # 2) Array geometry  — avgWidth/Length from array file
+    # 3) Series lookup   — fixed size from spec sheet (last resort)
+    effective_module_w    = coalesce(avgRowWidth,  avgWidth),
+    effective_module_l    = coalesce(avgRowLength, avgLength),
+    effective_module_area = effective_module_w * effective_module_l,
+    module_area_used = coalesce(
+      ifelse(is.finite(effective_module_area) & effective_module_area > 0,
+             effective_module_area, NA_real_),
+      module_size_m2
+    ),
+    # Divide total row area by per-module area to estimate module count per array
+    num_modules = round(totRowArea / module_area_used),
+    # Track which tier was used for each array
+    modules_source = case_when(
+      !is.na(avgRowWidth)             ~ "panel_geometry",
+      !is.na(avgWidth) & avgWidth > 0 ~ "array_geometry",
+      TRUE                            ~ "series_lookup"
+    )
+  )
+
+# Breakdown of how many arrays used each method
+table(thin_film_df$modules_source)
+head(thin_film_df$num_modules)
+nrow(thin_film_df)
+```
+
+
+## 8. Series Distribution Summary
+
+```{r series-distribution overview}
+series_distribution <- thin_film_df %>%
+  group_by(predicted_series) %>%
+  summarise(
+    num_arrays    = n(),
+    total_modules = sum(num_modules, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  mutate(
+    percent_arrays  = round(100 * num_arrays   / sum(num_arrays),   1),
+    percent_modules = round(100 * total_modules / sum(total_modules), 1)
+  ) %>%
+  arrange(desc(total_modules))
+
+series_distribution
+```
+
+
+## 9. Material Estimation per Array
+
+```{r material-estimation}
+# Material composition per module by series
+# Source: First Solar product datasheets
+# CdTe and Copper in grams/module; all others in kg/module
+material_per_module <- tibble(
+  predicted_series = c("Series 2", "Series 3", "Series 4", "Series 6", "Series 7"),
+  CdTe_g           = c(13,    13,    11,    36,    41   ),
+  Aluminum_kg      = c(0,     0,     0,     4.2,   0    ),
+  Steel_kg         = c(0,     0,     0,     0,     6.97 ),
+  EVA_kg           = c(0.28,  0.28,  0.28,  0.97,  1.11 ),
+  Copper_g         = c(43.7,  27.3,  27.3,  16.1,  14.6 ),
+  GlassMass_kg      = c(11.52, 11.52, 11.52, 30.875, 35.00),
+  Other_kg         = c(0.3,   0.3,   0.3,   0.3,   0.3  ),
+  TotalWeight_kg   = c(12,    12,    12,    34.5,  39.7 ),
+  CalcTotalMass_kg  = c(12.1567, 12.1403, 12.1383, 36.3971, 43.4356)
+)
+
+thin_film_df <- thin_film_df %>%
+  left_join(material_per_module, by = "predicted_series") %>%
+  mutate(
+    total_CdTe_g          = CdTe_g         * num_modules,
+    total_Aluminum_kg     = Aluminum_kg    * num_modules,
+    total_Steel_kg        = Steel_kg       * num_modules,
+    total_EVA_kg          = EVA_kg         * num_modules,
+    total_Copper_g        = Copper_g       * num_modules,
+    total_Other_kg        = Other_kg       * num_modules,
+    total_Array_Weight_kg = TotalWeight_kg * num_modules,
+    total_GlassMass_kg    = GlassMass_kg     * num_modules,
+    total_CalcMass_kg     = CalcTotalMass_kg * num_modules,
+    total_CdTe_metton     = total_CdTe_g   / 1e6,  # g → metric tons
+    total_Copper_metton   = total_Copper_g / 1e6   # g → metric tons
+  )
+```
+
+
+## 10. State-Level Material Aggregation
+
+```{r state-materials}
+state_materials <- thin_film_df %>%
+  mutate(STATEFP = str_pad(as.character(STATEFP), 2, pad = "0")) %>%
+  filter(!STATEFP %in% non_cont_US) %>%
+  group_by(STATEFP) %>%
+  summarise(
+    CdTe_t     = sum(total_CdTe_g,       na.rm = TRUE) / 1e6,  #  g -> t
+    Aluminum_t = sum(total_Aluminum_kg,  na.rm = TRUE) / 1e3,  # kg -> t
+    Steel_t    = sum(total_Steel_kg,     na.rm = TRUE) / 1e3,  # kg  
+    EVA_t      = sum(total_EVA_kg,       na.rm = TRUE) / 1e3,  # kg 
+    Copper_t   = sum(total_Copper_g,     na.rm = TRUE) / 1e6,  #  g 
+    Glass_t    = sum(total_GlassMass_kg, na.rm = TRUE) / 1e3,  # kg
+    Other_t    = sum(total_Other_kg,     na.rm = TRUE) / 1e3,  # kg 
+    CalcMass_t = sum(total_CalcMass_kg,  na.rm = TRUE) / 1e3,  # kg
+    .groups = "drop"
+  )
+
+us_materials <- cont_US %>%
+  left_join(state_materials, by = "STATEFP")
+```
+
+
+## 11. Choropleth Maps by Material
+
+```{r choropleth-maps}
+# Reusable function to generate a state-level choropleth for a given material column
+# Expects us_materials to have one row per state with pre-aggregated tonnage columns
+create_material_map <- function(material_col, material_name) {
+  pal <- colorNumeric(palette = "plasma", domain = us_materials[[material_col]], na.color = "grey90")
+
+  leaflet(us_materials) %>%
+    addProviderTiles("CartoDB.Positron") %>%
+    addPolygons(
+      fillColor = ~pal(get(material_col)),
+      color = "black", weight = 1, fillOpacity = 0.8,
+      label = ~paste0(NAME, ": ", round(get(material_col), 1), " t"),
+      highlightOptions = highlightOptions(weight = 2, color = "red", bringToFront = TRUE)
+    ) %>%
+    addLegend("bottomright", pal = pal, values = ~get(material_col),
+              title = paste("Total", material_name, "(t)"), opacity = 0.7)
+}
+
+create_material_map("CdTe_t",     "Cadmium Telluride")
+create_material_map("Aluminum_t", "Aluminum")
+create_material_map("Steel_t",    "Steel")
+create_material_map("EVA_t",      "EVA Encapsulant")
+create_material_map("Copper_t",   "Copper")
+create_material_map("Other_t",    "Other Materials")
+create_material_map("Glass_t",    "Glass Mass")
+create_material_map("CalcMass_t", "Total Calculated Mass")
+```
+
+
+## 12. Material Density Maps
+
+```{r density-map-function}
+# Reusable weighted KDE density map function for any numeric column in thin_film_df
+# When material_col is NULL, produces a simple point density map (all weights = 1)
+# When material_col is provided, each point is weighted by that column's value (e.g. tonnes of CdTe)
+create_material_density_map <- function(
+    material_col       = NULL,         # column to weight by; NULL = unweighted point density
+    material_name      = material_col, # legend title; defaults to column name if not specified
+    df                 = thin_film_df,
+    lon_col            = "longitude",
+    lat_col            = "latitude",
+    cellsize_km        = 10,           # raster grid resolution in km
+    bandwidth_km       = 90,           # Gaussian smoothing bandwidth in km
+    palette_option     = "magma",      # any viridis palette option (magma, plasma, viridis etc.)
+    raster_interpolate = FALSE) {      # bilinear interpolation on raster; FALSE = sharp grid cells
+
+  # Select only the columns needed and drop rows with non-finite coordinates or weights
+  needed <- c(lon_col, lat_col)
+  if (!is.null(material_col)) needed <- c(needed, material_col)
+  d <- df[, needed, drop = FALSE]
+  d <- d[is.finite(d[[lon_col]]) & is.finite(d[[lat_col]]), , drop = FALSE]
+  if (!is.null(material_col)) d <- d[is.finite(d[[material_col]]), , drop = FALSE]
+
+  # Set weights: uniform (1) for point density, or the material column values for weighted KDE
+  w <- if (is.null(material_col)) rep(1, nrow(d)) else d[[material_col]]
+
+  # Project points to Albers Equal Area (EPSG:5070) to match raster CRS
+  pts <- st_as_sf(d, coords = c(lon_col, lat_col), crs = 4326, remove = FALSE) |>
+    st_transform(crs_proj)
+
+  # Build empty raster grid over the contiguous US extent at the specified resolution
+  cellsize_m <- cellsize_km * 1000
+  r          <- rast(ext = ext(vect(us_p)), resolution = cellsize_m, crs = crs_proj)
+
+  # Rasterize points by summing weights into each grid cell
+  pts_spat   <- vect(pts)
+  pts_spat$w <- w
+  r_sum      <- rasterize(pts_spat, r, field = "w", fun = "sum", background = 0)
+
+  # Build and apply a 2D Gaussian kernel for spatial smoothing
+  # Kernel extends 3 standard deviations out from each cell (captures ~99.7% of influence)
+  # Normalized so weights sum to 1 — preserves total mass across the raster
+  bw_m      <- bandwidth_km * 1000
+  rad_cells <- ceiling(bw_m * 3 / cellsize_m)
+  xy        <- seq(-rad_cells, rad_cells)
+  g         <- outer(xy, xy, function(xi, yi) exp(-(xi^2 + yi^2) * cellsize_m^2 / (2 * bw_m^2)))
+  g         <- g / sum(g)
+  r_smooth  <- focal(r_sum, w = g, fun = sum, na.policy = "omit", fillvalue = 0)
+
+  # Clip smoothed raster to US boundary and convert to dataframe for ggplot
+  r_smooth    <- mask(r_smooth, vect(us_p))
+  df_r        <- as.data.frame(r_smooth, xy = TRUE, na.rm = TRUE)
+  names(df_r) <- c("x", "y", "z")
+
+  ggplot() +
+    geom_raster(data = df_r, aes(x = x, y = y, fill = z), interpolate = raster_interpolate) +
+    geom_sf(data = states_p, fill = NA, color = "black", linewidth = 0.15) +
+    geom_sf(data = us_p,     fill = NA, color = "black", linewidth = 0.40) +
+    coord_sf(crs = crs_proj, expand = FALSE) +
+    scale_fill_viridis(option = palette_option, direction = -1,
+                       name = ifelse(is.null(material_name), "Density", material_name)) +
+    theme_void() +
+    theme(legend.position = "right") +
+    labs(
+      title    = "Density Map — Continental United States",
+      subtitle = if (!is.null(material_col)) paste("Weighted by", material_col) else "Point density"
+    )
+}
+```
+
+```{r run-density-maps}
+create_material_density_map(
+  material_col  = "total_CdTe_g",
+  material_name = "CdTe (g)",
+  cellsize_km   = 5,
+  bandwidth_km  = 70
+)
+
+create_material_density_map(
+  material_col  = "total_Steel_kg",
+  material_name = "Steel (kg)",
+  cellsize_km   = 5,
+  bandwidth_km  = 70
+)
+
+create_material_density_map(
+  material_col  = "total_GlassMass_kg",
+  material_name = "Glass Mass (kg)",
+  cellsize_km   = 5,
+  bandwidth_km  = 70
+)
+
+create_material_density_map(
+  material_col  = "total_CalcMass_kg",
+  material_name = "Total Calculated Mass (kg)",
+  cellsize_km   = 5,
+  bandwidth_km  = 70
+)
+
+```
+
+```{r}
+# 1. Materials to map
+# Each entry defines the source column, display name, and unit scale factor
+# scale = 1/1000 converts grams to kg for CdTe and Copper so all materials are comparable
+materials <- list(
+  list(col = "total_CdTe_g",      name = "Cadmium Telluride", scale = 1/1000), # g -> kg
+  list(col = "total_Aluminum_kg", name = "Aluminum",          scale = 1),
+  list(col = "total_Steel_kg",    name = "Steel",             scale = 1),
+  list(col = "total_EVA_kg",      name = "EVA Encapsulant",   scale = 1),
+  list(col = "total_Copper_g",    name = "Copper",            scale = 1/1000), # g -> kg
+  list(col = "total_Other_kg",    name = "Other Materials",   scale = 1),
+  list(col = "total_GlassMass_kg", name = "Glass Mass",           scale = 1),
+  list(col = "total_CalcMass_kg",  name = "Total Calculated Mass", scale = 1)
+)
+
+# ── 2. Compute proportional density raster for each material ──────────────
+# Normalizing by US total converts raw material mass to proportion of national total
+# This makes materials with very different units/magnitudes visually comparable across facets
+material_density_df <- purrr::map_dfr(materials, function(mat) {
+
+  # Subset to needed columns and drop any rows with non-finite values
+  d <- thin_film_df[, c("longitude", "latitude", mat$col), drop = FALSE]
+  d <- d[is.finite(d$longitude) & is.finite(d$latitude) & is.finite(d[[mat$col]]), ]
+
+  # Normalize each array's value to its share of the US total for this material
+  us_total     <- sum(d[[mat$col]], na.rm = TRUE)
+  d[[mat$col]] <- d[[mat$col]] / us_total
+
+  # Project points and assign normalized weights for rasterization
+  pts <- st_as_sf(d, coords = c("longitude", "latitude"), crs = 4326) |>
+    st_transform(crs_proj)
+  pts_spat   <- vect(pts)
+  pts_spat$w <- d[[mat$col]]
+
+  # Rasterize by summing weights per cell, then smooth with the pre-built Gaussian kernel
+  # r_template and g_kernel are defined in the Shared Spatial Setup chunk
+  r_sum    <- rasterize(pts_spat, r_template, field = "w", fun = "sum", background = 0)
+  r_smooth <- focal(r_sum, w = g_kernel, fun = sum, na.policy = "omit", fillvalue = 0)
+  r_smooth <- mask(r_smooth, vect(us_p))
+
+  # Convert raster to dataframe and tag with material name for faceting
+  df_r        <- as.data.frame(r_smooth, xy = TRUE, na.rm = TRUE)
+  names(df_r) <- c("x", "y", "density")
+  df_r$material <- mat$name
+  df_r
+})
+
+# 3. Full grid + mask to US boundary
+# Not every material has a density value at every grid cell after masking
+# Expanding to a full grid and filling missing cells with a near-zero value (1e-9)
+# ensures consistent facet dimensions and prevents blank panels in the plot
+full_grid <- expand.grid(
+  x        = unique(material_density_df$x),
+  y        = unique(material_density_df$y),
+  material = unique(material_density_df$material)
+)
+
+material_density_df <- full_grid %>%
+  left_join(material_density_df, by = c("x", "y", "material")) %>%
+  mutate(density = replace_na(density, 1e-9))  # near-zero rather than NA so color scale renders correctly
+
+# Re-apply US boundary mask — cells outside the contiguous US are set to NA so they render as blank
+grid_sf <- st_as_sf(material_density_df, coords = c("x", "y"), crs = crs_proj)
+in_us   <- st_intersects(grid_sf, us_p, sparse = FALSE)[, 1]
+material_density_df <- material_density_df %>%
+  mutate(density = ifelse(in_us, density, NA))
+```
+
+```{r Faceted density plot}
+
+# Small offset added to all density values before log transform
+# log10(0) is undefined and log10(1e-9) creates extreme outliers in the color scale
+# 1e-6 is below any real signal so it acts as a visual floor without distorting the map
+material_density_df <- material_density_df %>%
+  mutate(density = density + 1e-6)
+
+# Set facet order — CdTe first as the primary material of interest,
+# followed by encapsulant and structural materials
+material_density_df$material <- factor(material_density_df$material, levels = c(
+  "Cadmium Telluride",
+  "EVA Encapsulant",
+  "Aluminum",
+  "Steel",
+  "Copper",
+  "Glass Mass",
+  "Other Materials"
+))
+
+ggplot() +
+  # us_p drawn first so state lines render on top of the raster
+  geom_sf(data = us_p, fill = NA, color = "black", linewidth = 0.25) +
+  geom_raster(data = material_density_df,
+              aes(x = x, y = y, fill = density)) +
+  geom_sf(data = states_p, fill = NA, color = "white", linewidth = 0.05) +  # white lines separate states without overpowering the fill
+  coord_sf(crs = crs_proj, expand = FALSE) +
+  scale_fill_viridis(
+    option    = "magma",
+    direction = 1,
+    trans     = "log10",        # log scale compresses the wide dynamic range of density values
+    breaks    = c(1e-6, 1e-5, 1e-4),
+    labels    = c("1e-6", "1e-5", "1e-4"),
+    na.value  = "white",        # NA cells (outside US boundary) render as white
+    name      = "Proportion\nof U.S. Total"
+  ) +
+  facet_wrap(~material, ncol = 2) +
+  theme_void() +
+  theme(
+    plot.background   = element_rect(fill = NA, color = NA),
+    strip.background  = element_blank(),
+    strip.text        = element_text(face = "bold", size = 11),
+    panel.spacing     = unit(0.75, "lines"),
+    legend.position   = "right",
+    legend.title      = element_text(size = 9, face = "bold"),
+    legend.key.height = unit(1.2, "cm"),
+    plot.title        = element_text(size = 13, face = "bold"),
+    plot.subtitle     = element_text(size = 9,  color = "grey40")
+  ) +
+  labs(
+    title    = "Geographic Distribution of Thin-Film Solar Array Materials by Type",
+    subtitle = "Material density estimated across U.S. states (normalized to proportion)"
+  )
+```
+
+
+
+```{r}
+# Combined density map showing all series with distinct colors
+# Each series plotted as its own layer so colors stay distinct
+library(terra)
+library(viridis)
+
+# Build a smoothed raster for each series
+smooth_series <- function(series_name) {
+  pts <- thin_film_df %>%
+    filter(predicted_series == series_name,
+           is.finite(longitude), is.finite(latitude)) %>%
+    st_as_sf(coords = c("longitude", "latitude"), crs = 4326) %>%
+    st_transform(crs_proj)
+
+  if (nrow(pts) == 0) return(NULL)
+
+  pts_spat   <- vect(pts)
+  pts_spat$w <- 1
+  r_sum      <- rasterize(pts_spat, r_template, field = "w", fun = "sum", background = 0)
+
+  r_smooth <- focal(r_sum, w = g_kernel, fun = sum, na.policy = "omit", fillvalue = 0)
+  r_smooth <- mask(r_smooth, vect(us_p))
+
+  df <- as.data.frame(r_smooth, xy = TRUE, na.rm = TRUE)
+  names(df) <- c("x", "y", "density")
+  df$series <- series_name
+  df
+}
+
+series_density_df <- bind_rows(lapply(
+  c("Series 2", "Series 3", "Series 4", "Series 6", "Series 7"),
+  smooth_series
+))
+
+full_grid <- expand.grid(
+  x      = unique(series_density_df$x),
+  y      = unique(series_density_df$y),
+  series = unique(series_density_df$series)
+)
+
+# Left join so missing cells get NA, then fill with near-zero
+series_density_df <- full_grid %>%
+  left_join(series_density_df, by = c("x", "y", "series")) %>%
+  mutate(density = replace_na(density, 1e-6))
+
+grid_sf <- st_as_sf(series_density_df, coords = c("x", "y"), crs = crs_proj)
+
+# Mask to US outline — points outside get NA
+in_us <- st_intersects(grid_sf, us_p, sparse = FALSE)[, 1]
+
+series_density_df <- series_density_df %>%
+  mutate(density = ifelse(in_us, density, NA))
+```
+
+
+```{r}
+series_density_df <- series_density_df %>%
+  mutate(density = density + 1e-6)
+ggplot() +
+  geom_sf(data = us_p,     fill = NA,       color = "black", linewidth = 0.25) +
+  geom_raster(data = series_density_df,
+              aes(x = x, y = y, fill = density)) +
+  geom_sf(data = states_p, fill = NA, color = "white", linewidth = 0.1) +
+  coord_sf(crs = crs_proj, expand = FALSE) +
+  scale_fill_viridis(
+  option    = "magma",
+  direction = 1,
+  na.value  = "white",
+  name      = "Array Density\n (log scale)",
+  trans     = "log10",
+  breaks    = c(0.0001, 0.001, 0.01),
+  labels    = c("0.0001", "0.001", "0.01")
+  )+
+  facet_wrap(~series, ncol = 2) +
+  theme_void() +
+  theme(
+    
+    plot.background  = element_rect(fill = NA, color = NA),
+    
+    strip.background = element_blank(),
+    strip.text       = element_text(face = "bold", size = 11),
+    
+    panel.spacing    = unit(0.75, "lines"),
+    
+    legend.position  = "right",
+    legend.title     = element_text(size = 9, face = "bold"),
+    legend.key.height = unit(1.2, "cm"),
+    
+    plot.title       = element_text(size = 13, face = "bold"),
+    plot.subtitle    = element_text(size = 9,  color = "grey40")
+  ) +
+  labs(
+    title    = "Geographic Distribution of Thin-Film Solar Arrays by Product Series",
+    subtitle = "Array density estimated across U.S. states (log scale)"
+  )
+
+```
+
+## 5b. Bubble Map — Installation Year and Capacity (Static)
+```{r bubble-map-year-capacity}
+
+# Summarise annual installation counts for the inset bar chart
+year_counts <- thin_film_df %>%
+  filter(is.finite(instYr)) %>%
+  group_by(instYr) %>%
+  summarise(n = n(), .groups = "drop")
+
+# Build inset bar chart — colors match the magma palette used in the bubble map
+inset_bar <- ggplot(year_counts, aes(x = instYr, y = n, fill = instYr)) +
+  geom_col(width = 0.8) +
+  scale_fill_viridis_c(option = "magma", guide = "none") +  # same palette as bubble map, no legend
+  scale_x_continuous(breaks = seq(min(year_counts$instYr), max(year_counts$instYr), by = 2)) +
+  labs(x = NULL, y = "Arrays") +
+  theme_minimal(base_size = 7) +
+  theme(
+    panel.grid.minor   = element_blank(),
+    panel.grid.major.x = element_blank(),
+    plot.background    = element_rect(fill = "white", color = "grey70", linewidth = 0.3),
+    axis.text.x        = element_text(angle = 45, hjust = 1, size = 6),
+    axis.text.y        = element_text(size = 6)
+  )
+
+# Convert thin-film arrays to sf and reproject to Albers Equal Area (EPSG:5070)
+thin_film_sf <- thin_film_df %>%
+  filter(is.finite(longitude), is.finite(latitude),
+         is.finite(instYr),    is.finite(capMW_total)) %>%
+  st_as_sf(coords = c("longitude", "latitude"), crs = 4326) %>%
+  st_transform("EPSG:5070")
+
+# Get the projected coordinate extent of the US for inset positioning
+us_bbox <- st_bbox(us_p)
+
+# Place inset in bottom-left — below California, above the southern border
+# Adjust xmin/xmax/ymin/ymax if the inset needs to shift
+inset_x_min <- us_bbox["xmin"]
+inset_x_max <- us_bbox["xmin"] + (us_bbox["xmax"] - us_bbox["xmin"]) * 0.28
+inset_y_min <- us_bbox["ymin"]
+inset_y_max <- us_bbox["ymin"] + (us_bbox["ymax"] - us_bbox["ymin"]) * 0.22
+
+ggplot() +
+  geom_sf(data = states_p, fill = "grey80", color = "black", linewidth = 0.15) +
+  geom_sf(data = us_p,     fill = NA,       color = "black", linewidth = 0.40) +
+  # Bubble size = capacity, color = installation year — both encoded for emphasis
+  geom_sf(data = thin_film_sf,
+          aes(size = capMW_total, color = instYr),
+          alpha = 0.5) +
+  # Inset bar chart positioned in bottom-left corner of the projected coordinate space
+  annotation_custom(
+    grob = ggplotGrob(inset_bar),
+    xmin = inset_x_min, xmax = inset_x_max,
+    ymin = inset_y_min, ymax = inset_y_max
+  ) +
+  scale_size_continuous(range = c(1, 20), name = "Capacity (MW)") +
+  scale_color_viridis_c(option = "magma", name = "Installation Year") +
+  coord_sf(crs = "EPSG:5070", expand = FALSE) +
+  theme_void() +
+  theme(
+    plot.title      = element_text(face = "bold", size = 13),
+    plot.subtitle   = element_text(size = 10, color = "grey40"),
+    legend.position = "right"
+  ) +
+  labs(
+    title    = "Thin-Film Solar Arrays by Installation Year and Capacity",
+    subtitle = "Bubble size = capacity (MW), color = installation year; inset = annual installation count"
+  )
+```
+
+```{r line-graph-avg-median-cum}
+line_df <- thin_film_df %>%
+  filter(is.finite(instYr), is.finite(capMW_total)) %>%
+  group_by(instYr) %>%
+  summarise(
+    mean_cap     = mean(capMW_total,   na.rm = TRUE),
+    median_cap   = median(capMW_total, na.rm = TRUE),
+    annual_count = n(),
+    .groups = "drop"
+  ) %>%
+  arrange(instYr) %>%
+  mutate(cumulative_count = cumsum(annual_count))
+
+scale_factor <- max(c(line_df$mean_cap, line_df$median_cap)) / max(line_df$cumulative_count)
+
+ggplot(line_df, aes(x = instYr)) +
+  geom_line(aes(y = mean_cap,   color = "Mean Capacity (MW)"),   linewidth = 1.2) +
+  geom_point(aes(y = mean_cap,  color = "Mean Capacity (MW)"),   size = 2.5, shape = 16) +
+  geom_line(aes(y = median_cap, color = "Median Capacity (MW)"), linewidth = 1.2, linetype = "dashed") +
+  geom_point(aes(y = median_cap,color = "Median Capacity (MW)"), size = 3.5, shape = 18) +
+  geom_line(aes(y = cumulative_count * scale_factor,  color = "Cumulative Installations"), linewidth = 1.2) +
+  geom_point(aes(y = cumulative_count * scale_factor, color = "Cumulative Installations"), size = 2.5) +
+  scale_y_continuous(
+    name     = "Capacity per Array (MW)",
+    sec.axis = sec_axis(~ . / scale_factor, name = "Cumulative Array Count")
+  ) +
+  scale_x_continuous(breaks = seq(min(line_df$instYr), max(line_df$instYr), by = 2)) +
+  scale_color_manual(
+    values = c("Mean Capacity (MW)"       = "green4",
+               "Median Capacity (MW)"     = "chartreuse3",
+               "Cumulative Installations" = "dodgerblue4"),
+    name   = NULL
+  ) +
+  labs(
+    title    = "Mean and Median Array Capacity Against Cumulative Installations",
+    subtitle = "Mean (solid) and median (dashed) capacity per array vs cumulative array count by year",
+    x        = "Installation Year"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(
+    plot.title         = element_text(face = "bold", size = 13),
+    plot.subtitle      = element_text(size = 10, color = "grey40"),
+    legend.position    = "top",
+    panel.grid.minor   = element_blank(),
+    axis.title.y.right = element_text(color = "dodgerblue4"),
+    axis.title.y.left  = element_text(color = "green4")
+  )
+```
+
+```{r   *There is something wrong with the scaling here*}
+line_df <- thin_film_df %>%
+  filter(is.finite(instYr), is.finite(capMW_total)) %>%
+  group_by(instYr) %>%
+  summarise(
+    median_cap   = median(capMW_total, na.rm = TRUE),
+    q1_cap       = quantile(capMW_total, 0.25, na.rm = TRUE),
+    q3_cap       = quantile(capMW_total, 0.75, na.rm = TRUE),
+    annual_count = n(),
+    .groups = "drop"
+  ) %>%
+  arrange(instYr) %>%
+  mutate(cumulative_count = cumsum(annual_count))
+
+scale_factor <- max(line_df$q3_cap) / max(line_df$cumulative_count)
+
+ggplot(line_df, aes(x = instYr)) +
+  geom_ribbon(aes(ymin = q1_cap, ymax = q3_cap),
+              fill = "chartreuse3", alpha = 0.2) +
+  geom_line(aes(y = median_cap, color = "Median Capacity (MW)"), linewidth = 1.2) +
+  geom_point(aes(y = median_cap, color = "Median Capacity (MW)"), size = 3.5, shape = 18) +
+  geom_line(aes(y = cumulative_count * scale_factor, color = "Cumulative Installations"), linewidth = 1.2) +
+  geom_point(aes(y = cumulative_count * scale_factor, color = "Cumulative Installations"), size = 2.5) +
+  scale_y_continuous(
+    name     = "Capacity per Array (MW)",
+    sec.axis = sec_axis(~ . / scale_factor, name = "Cumulative Array Count")
+  ) +
+  scale_x_continuous(breaks = seq(min(line_df$instYr), max(line_df$instYr), by = 2)) +
+  scale_color_manual(
+    values = c("Median Capacity (MW)"     = "chartreuse3",
+               "Cumulative Installations" = "dodgerblue4"),
+    name   = NULL
+  ) +
+  labs(
+    title    = "Median Array Capacity Against Cumulative Installations",
+    subtitle = "Median capacity per array (IQR shaded) vs cumulative array count by year",
+    x        = "Installation Year"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(
+    plot.title         = element_text(face = "bold", size = 13),
+    plot.subtitle      = element_text(size = 10, color = "grey40"),
+    legend.position    = "top",
+    panel.grid.minor   = element_blank(),
+    axis.title.y.right = element_text(color = "dodgerblue4"),
+    axis.title.y.left  = element_text(color = "chartreuse3")
+  )
+```
+
+```{r}
+# Summarise capacity distribution and installation counts per year
+# min/max capture the full range; IQR (q1–q3) shows where most arrays fall
+line_df <- thin_film_df %>%
+  filter(is.finite(instYr), is.finite(capMW_total)) %>%
+  group_by(instYr) %>%
+  summarise(
+    median_cap   = median(capMW_total, na.rm = TRUE),
+    q1_cap       = quantile(capMW_total, 0.25, na.rm = TRUE),
+    q3_cap       = quantile(capMW_total, 0.75, na.rm = TRUE),
+    min_cap      = min(capMW_total,      na.rm = TRUE),
+    max_cap      = max(capMW_total,      na.rm = TRUE),
+    annual_count = n(),
+    .groups      = "drop"
+  ) %>%
+  arrange(instYr) %>%
+  mutate(cumulative_count = cumsum(annual_count))
+
+# Scale factor aligns the two y-axes so max cumulative count maps to max capacity
+# This lets both series share the same plot area without distorting either axis
+scale_factor <- max(line_df$max_cap) / max(line_df$cumulative_count)
+
+ggplot(line_df, aes(x = instYr)) +
+  # IQR ribbon shows the middle 50% of array capacities per year
+  geom_ribbon(aes(ymin = q1_cap, ymax = q3_cap),
+              fill = "chartreuse3", alpha = 0.2) +
+  geom_line(aes(y = median_cap,  color = "Median Capacity (MW)"),    linewidth = 1.2) +
+  geom_point(aes(y = median_cap, color = "Median Capacity (MW)"),    size = 3.5, shape = 18) +
+  # Triangle points mark the annual min and max — same color, same legend entry
+  geom_point(aes(y = min_cap,    color = "Min/Max Capacity (MW)"),   size = 2.5, shape = 17) +
+  geom_point(aes(y = max_cap,    color = "Min/Max Capacity (MW)"),   size = 2.5, shape = 17) +
+  # Cumulative count scaled to left axis units via scale_factor for dual-axis alignment
+  geom_line(aes(y = cumulative_count * scale_factor,  color = "Cumulative Installations"), linewidth = 1.2) +
+  geom_point(aes(y = cumulative_count * scale_factor, color = "Cumulative Installations"), size = 2.5) +
+  scale_y_continuous(
+    name     = "Capacity per Array (MW)",
+    sec.axis = sec_axis(~ . / scale_factor, name = "Cumulative Array Count")  # inverse transform recovers true count
+  ) +
+  scale_x_continuous(breaks = seq(min(line_df$instYr), max(line_df$instYr), by = 2)) +
+  scale_color_manual(
+    values = c("Median Capacity (MW)"     = "chartreuse3",
+               "Cumulative Installations" = "dodgerblue4",
+               "Min/Max Capacity (MW)"    = "darkorange"),
+    name   = NULL
+  ) +
+  labs(
+    title    = "Median Array Capacity Against Cumulative Installations",
+    subtitle = "Median capacity per array (IQR shaded, min/max points) vs cumulative array count by year",
+    x        = "Installation Year"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(
+    plot.title         = element_text(face = "bold", size = 13),
+    plot.subtitle      = element_text(size = 10, color = "grey40"),
+    legend.position    = "top",
+    panel.grid.minor   = element_blank(),
+    axis.title.y.right = element_text(color = "dodgerblue4"),  # right axis color matches cumulative line
+    axis.title.y.left  = element_text(color = "chartreuse3")   # left axis color matches capacity line
+  )
+```
+```{r IQR Table of Capacity per Array based on Year}
+#install.packages("skimr")
+library(skimr)
+
+thin_film_df %>%
+  filter(is.finite(instYr)) %>%
+  group_by(instYr) %>%
+  skim(capMW_total)
+```
+
+
+```{r Investigating the 2014 Outlier}
+thin_film_df %>% filter(instYr == 2014)
+# 3571 topaz solar farms 
+# capMWDC = 752.1 
+# capMWAC = 585.9
+# Source = GMSEUSgeoref_v2_0
+# Est Num Mod: 10,439,497
+# Google Num Mod: 8,500,000 
+# Google: 550 MW             - Google source https://www.bherenewables.com/topaz-solar-farms
+# Google: operational year 2015
+# Series: 3
+```
+
+
+
+
+```{r}
+# Compute the median longitude from the full dataset once.
+# This is used as the default geographic split between "West" and "East".
+median_lon <- median(thin_film_df$longitude, na.rm = TRUE)
+
+# Function to plot cumulative center-of-gravity migration over time,
+# optionally weighted by a specified variable.
+plot_cog_split <- function(weight_col = NULL, title_label, split_lon = median_lon) {
+  
+  # Keep only observations with valid installation year and coordinates.
+  d <- thin_film_df %>%
+    filter(is.finite(instYr), is.finite(longitude), is.finite(latitude))
+  
+  # If a weighting variable is supplied:
+  # retain only rows with valid positive weights.
+  if (!is.null(weight_col)) {
+    d <- d %>% filter(is.finite(.data[[weight_col]]), .data[[weight_col]] > 0)
+  }
+
+  # Assign each observation to a region based on longitude relative
+  # to the chosen split point.
+  d <- d %>%
+    mutate(region = ifelse(longitude <= split_lon, "West", "East"))
+
+  # Get all unique installation years in sorted order.
+  # These define the cumulative time steps.
+  all_years <- sort(unique(d$instYr))
+
+  # For each region and each year:
+  # compute the cumulative center of gravity using all installations
+  # up to and including that year.
+  cog_df <- purrr::map_dfr(c("West", "East"), function(reg) {
+    d_reg <- d %>% filter(region == reg)
+    
+    purrr::map_dfr(all_years, function(yr) {
+      # Subset to cumulative installations through current year
+      d_cum <- d_reg %>% filter(instYr <= yr)
+      if (nrow(d_cum) == 0) return(NULL)
+      
+      # Use equal weights if no weight column is provided;
+      # otherwise use the supplied weighting variable.
+      w <- if (is.null(weight_col)) rep(1, nrow(d_cum)) else d_cum[[weight_col]]
+      
+      # Calculate weighted mean longitude and latitude
+      # representing the center of gravity for that cumulative set.
+      tibble(
+        instYr  = yr,
+        region  = reg,
+        cog_lon = weighted.mean(d_cum$longitude, w = w, na.rm = TRUE),
+        cog_lat = weighted.mean(d_cum$latitude,  w = w, na.rm = TRUE),
+        total_w = sum(w, na.rm = TRUE)
+      )
+    })
+  }) %>%
+    # Remove invalid center points or zero-weight results
+    filter(is.finite(cog_lon), is.finite(cog_lat), total_w > 0) %>%
+    arrange(region, instYr)
+
+  # Convert center-of-gravity coordinates to sf object,
+  # then project into Albers Equal Area (EPSG:5070)
+  # for accurate continental US mapping.
+  cog_sf <- st_as_sf(cog_df, coords = c("cog_lon", "cog_lat"), crs = 4326) %>%
+    st_transform("EPSG:5070") %>%
+    mutate(
+      # Extract projected x/y coordinates for ggplot layers
+      x = st_coordinates(.)[, 1],
+      y = st_coordinates(.)[, 2]
+    )
+
+  # Project the vertical longitude split line into the same map projection
+  # so it aligns correctly with the plotted geography.
+  split_x <- sf::st_transform(
+    sf::st_sfc(sf::st_point(c(split_lon, 0)), crs = 4326), "EPSG:5070"
+  )[[1]][1]
+
+  # Define colors for the two regional trajectories
+  region_colors <- c("West" = "dodgerblue4", "East" = "green4")
+
+  # Build the map
+  ggplot() +
+    # State polygons as background
+    geom_sf(data = states_p, fill = "grey95", color = "black", linewidth = 0.15) +
+    
+    # National boundary overlay
+    geom_sf(data = us_p,     fill = NA,       color = "black", linewidth = 0.40) +
+    
+    # Dashed vertical split line showing East/West division
+    geom_vline(xintercept = split_x,
+               color = "grey50", linewidth = 0.5, linetype = "dashed") +
+    
+    # Trajectory path showing movement of cumulative center of gravity over time
+    geom_path(data = cog_sf, aes(x = x, y = y, color = region), linewidth = 1) +
+    
+    # Points marking each yearly center position
+    geom_point(data = cog_sf, aes(x = x, y = y, color = region), size = 3) +
+    
+    # Year labels for each center point
+    geom_text(data = cog_sf, aes(x = x, y = y, label = instYr),
+              vjust = -0.8, size = 2.8, fontface = "bold") +
+    
+    # Manual region color mapping
+    scale_color_manual(values = region_colors, name = "Region") +
+    
+    # Ensure consistent projected map display
+    coord_sf(crs = "EPSG:5070", expand = FALSE) +
+    
+    # Minimal map styling
+    theme_void() +
+    theme(
+      plot.title      = element_text(face = "bold", size = 13),
+      plot.subtitle   = element_text(size = 10, color = "grey40"),
+      legend.position = "right"
+    ) +
+    
+    # Dynamic title and subtitle
+    labs(
+      title    = paste("Cumulative Center of Gravity Migration by Region —", title_label),
+      subtitle = paste0("Split at median longitude (", round(split_lon, 2), "°) [dashed line]")
+    )
+}
+
+```
+
+```{r}
+# Median longitude used to split arrays into East and West regions
+# Based on array count distribution rather than a fixed geographic boundary
+median_lon <- median(thin_film_df$longitude, na.rm = TRUE)
+
+# Plots the cumulative center of gravity (CoG) migration over time for East and West regions
+# CoG = weighted mean lat/lon of all arrays installed up to and including each year
+# weight_col = NULL gives equal weight to each array (count-based CoG)
+# weight_col = a numeric column weights each array by that value (e.g. capacity, material mass)
+plot_cog_split <- function(weight_col = NULL, title_label, split_lon = median_lon) {
+
+  # Filter to arrays with valid coordinates and year; also filter by weight column if provided
+  d <- thin_film_df %>%
+    filter(is.finite(instYr), is.finite(longitude), is.finite(latitude))
+  if (!is.null(weight_col)) {
+    d <- d %>% filter(is.finite(.data[[weight_col]]), .data[[weight_col]] > 0)
+  }
+
+  # Assign each array to East or West based on the split longitude
+  d <- d %>%
+    mutate(region = ifelse(longitude <= split_lon, "West", "East"))
+
+  all_years <- sort(unique(d$instYr))
+
+  # For each region and each year, compute the cumulative weighted mean lat/lon
+  # Cumulative means all arrays installed up to and including that year are included
+  # This tracks how the geographic center of mass shifts as deployment grows
+  cog_df <- purrr::map_dfr(c("West", "East"), function(reg) {
+    d_reg <- d %>% filter(region == reg)
+
+    purrr::map_dfr(all_years, function(yr) {
+      d_cum <- d_reg %>% filter(instYr <= yr)
+      if (nrow(d_cum) == 0) return(NULL)
+
+      w <- if (is.null(weight_col)) rep(1, nrow(d_cum)) else d_cum[[weight_col]]
+
+      tibble(
+        instYr  = yr,
+        region  = reg,
+        cog_lon = weighted.mean(d_cum$longitude, w = w, na.rm = TRUE),
+        cog_lat = weighted.mean(d_cum$latitude,  w = w, na.rm = TRUE),
+        total_w = sum(w, na.rm = TRUE)
+      )
+    })
+  }) %>%
+    filter(is.finite(cog_lon), is.finite(cog_lat), total_w > 0) %>%
+    arrange(region, instYr)
+
+  # Reproject CoG points to EPSG:5070 and extract x/y for segment drawing
+  # label_yr labels even years only to avoid overcrowding
+  cog_sf <- st_as_sf(cog_df, coords = c("cog_lon", "cog_lat"), crs = 4326) %>%
+    st_transform("EPSG:5070") %>%
+    mutate(
+      x        = st_coordinates(.)[, 1],
+      y        = st_coordinates(.)[, 2],
+      label_yr = ifelse(instYr %% 2 == 0, instYr, NA)
+    )
+
+  # Build year-to-year segments for each region so the path can be colored by year
+  # yr_mid is the midpoint year between consecutive points — used to color each segment
+  cog_segments <- cog_sf %>%
+    st_drop_geometry() %>%
+    arrange(region, instYr) %>%
+    group_by(region) %>%
+    mutate(
+      x_end  = lead(x),
+      y_end  = lead(y),
+      yr_mid = (instYr + lead(instYr)) / 2
+    ) %>%
+    filter(!is.na(x_end)) %>%
+    ungroup()
+
+  # Convert the split longitude to projected coordinates for geom_vline placement
+  split_x <- sf::st_transform(
+    sf::st_sfc(sf::st_point(c(split_lon, 0)), crs = 4326), "EPSG:5070"
+  )[[1]][1]
+
+  region_linetypes <- c("West" = "solid", "East" = "solid")
+
+  ggplot() +
+    geom_sf(data = states_p, fill = "grey85", color = "black", linewidth = 0.15) +
+    geom_sf(data = us_p,     fill = NA,       color = "black", linewidth = 0.40) +
+    # Dashed red line marks the East/West split longitude in projected space
+    geom_vline(xintercept = split_x,
+               color = "red", linewidth = 0.75, linetype = "dashed") +
+    # Segments connect consecutive CoG positions; colored by midpoint year
+    geom_segment(data = cog_segments,
+                 aes(x = x, y = y, xend = x_end, yend = y_end,
+                     color = yr_mid, linetype = region),
+                 linewidth = 1.4) +
+    geom_point(data = cog_sf, aes(x = x, y = y, color = instYr), size = 2) +
+    # Labels on even years only to reduce overplotting
+    geom_text(data = cog_sf %>% filter(!is.na(label_yr)),
+              aes(x = x, y = y, label = label_yr),
+              vjust = -0.8, size = 2.8, fontface = "bold", color = "black") +
+    scale_color_viridis_c(option = "plasma", name = "Year") +
+    scale_linetype_manual(values = region_linetypes, name = "Region") +
+    coord_sf(crs = "EPSG:5070", expand = FALSE) +
+    theme_void() +
+    theme(
+      plot.title      = element_text(face = "bold", size = 13),
+      plot.subtitle   = element_text(size = 10, color = "grey40"),
+      legend.position = "right"
+    ) +
+    labs(
+      title    = paste("Cumulative Center of Gravity Migration by Region:", title_label),
+      subtitle = paste0("Split at geographic midpoint by array count (", round(split_lon, 2), "°)")
+    )
+}
+
+# Generate one CoG migration map per weighting variable
+# NULL = unweighted (each array counts equally); all others weight by material mass or capacity
+plot_cog_split(NULL,                "Array Installations")
+plot_cog_split("capMW_total",       "Installed Capacity")
+plot_cog_split("total_CdTe_g",      "Cadmium Telluride")
+plot_cog_split("total_Aluminum_kg", "Aluminum")
+plot_cog_split("total_Steel_kg",    "Steel")
+plot_cog_split("total_Copper_g",    "Copper")
+plot_cog_split("total_EVA_kg",      "EVA Encapsulant")
+plot_cog_split("total_GlassMass_kg", "Glass Mass")
+plot_cog_split("total_CalcMass_kg",  "Total Calculated Mass")
+```
+
+
+```{r cumulative-cog-national}
+# Median longitude is calculated from the full dataset
+# Included here for consistency with the regional CoG workflow
+median_lon <- median(thin_film_df$longitude, na.rm = TRUE)
+
+# Plots the cumulative national center of gravity (CoG) migration over time
+# CoG = weighted mean lat/lon of all arrays installed up to and including each year
+# weight_col = NULL gives equal weight to each array (count-based CoG)
+# weight_col = a numeric column weights each array by that value (e.g. capacity, material mass)
+plot_cog <- function(weight_col = NULL, title_label) {
+  
+  # Filter to arrays with valid installation year and coordinates
+  d <- thin_film_df %>%
+    filter(is.finite(instYr), is.finite(longitude), is.finite(latitude))
+  
+  # If a weight column is provided, keep only valid positive weights
+  if (!is.null(weight_col)) {
+    d <- d %>% filter(is.finite(.data[[weight_col]]), .data[[weight_col]] > 0)
+  }
+
+  # Get all installation years represented in the filtered dataset
+  all_years <- sort(unique(d$instYr))
+
+  # For each year, compute the cumulative weighted mean lat/lon
+  # Cumulative means all arrays installed up to and including that year are included
+  # This tracks how the national geographic center of mass shifts as deployment grows
+  cog_df <- purrr::map_dfr(all_years, function(yr) {
+    d_cum <- d %>% filter(instYr <= yr)
+    if (nrow(d_cum) == 0) return(NULL)
+    
+    # Use equal weights if no weight column is supplied;
+    # otherwise use the selected numeric weighting variable
+    w <- if (is.null(weight_col)) rep(1, nrow(d_cum)) else d_cum[[weight_col]]
+    
+    tibble(
+      instYr  = yr,
+      cog_lon = weighted.mean(d_cum$longitude, w = w, na.rm = TRUE),
+      cog_lat = weighted.mean(d_cum$latitude,  w = w, na.rm = TRUE),
+      total_w = sum(w, na.rm = TRUE)
+    )
+  }) %>%
+    # Remove invalid CoG points and years with zero total weight
+    filter(is.finite(cog_lon), is.finite(cog_lat), total_w > 0) %>%
+    arrange(instYr)
+
+  # Reproject CoG points to EPSG:5070 and extract x/y coordinates for plotting
+  # label_yr labels even years only to avoid overcrowding
+  cog_sf <- st_as_sf(cog_df, coords = c("cog_lon", "cog_lat"), crs = 4326) %>%
+    st_transform("EPSG:5070") %>%
+    mutate(
+      x        = st_coordinates(.)[, 1],
+      y        = st_coordinates(.)[, 2],
+      label_yr = ifelse(instYr %% 2 == 0, instYr, NA)
+    )
+
+  # Build year-to-year CoG segments so the migration path can be colored by year
+  # yr_mid is the midpoint year between consecutive points — used to color each segment
+  cog_segments <- cog_sf %>%
+    st_drop_geometry() %>%
+    arrange(instYr) %>%
+    mutate(
+      x_end  = lead(x),
+      y_end  = lead(y),
+      yr_mid = (instYr + lead(instYr)) / 2
+    ) %>%
+    filter(!is.na(x_end))
+
+  # Build the national CoG migration map
+  ggplot() +
+    geom_sf(data = states_p, fill = "grey85", color = "black", linewidth = 0.15) +
+    geom_sf(data = us_p,     fill = NA,       color = "black", linewidth = 0.40) +
+    # Segments connect consecutive CoG positions; colored by midpoint year
+    geom_segment(data = cog_segments,
+                 aes(x = x, y = y, xend = x_end, yend = y_end, color = yr_mid),
+                 linewidth = 1.4) +
+    geom_point(data = cog_sf, aes(x = x, y = y, color = instYr), size = 2) +
+    # Labels on even years only to reduce overplotting
+    geom_text(data = cog_sf %>% filter(!is.na(label_yr)),
+              aes(x = x, y = y, label = label_yr),
+              vjust = -0.8, size = 2.8, fontface = "bold", color = "black") +
+    scale_color_viridis_c(option = "plasma", name = "Year") +
+    coord_sf(crs = "EPSG:5070", expand = FALSE) +
+    theme_void() +
+    theme(
+      plot.title      = element_text(face = "bold", size = 13),
+      plot.subtitle   = element_text(size = 10, color = "grey40"),
+      legend.position = "right"
+    ) +
+    labs(
+      title    = paste("Cumulative Center of Gravity Migration:", title_label),
+    )
+}
+``` 
+
+```{r Using the Center of gravity functions }
+# Call it the same way
+plot_cog(NULL,                "Array Installations")
+plot_cog("capMW_total",       "Installed Capacity")
+plot_cog("total_CdTe_g",      "Cadmium Telluride")
+plot_cog("total_Aluminum_kg", "Aluminum")
+plot_cog("total_Steel_kg",    "Steel")
+plot_cog("total_Copper_g",    "Copper")
+plot_cog("total_EVA_kg",      "EVA Encapsulant")
+plot_cog("total_Array_Weight_kg", "Total Array Mass")
+plot_cog("total_GlassMass_kg", "Glass Mass")
+plot_cog("total_CalcMass_kg",  "Total Calculated Mass")
+```
+```{r}
+library(patchwork)
+
+# Strip titles, subtitles, and legends from all individual plots
+# We'll add one shared title and one shared legend at the end
+clean_cog <- function(weight_col, title_label) {
+  plot_cog(weight_col, title_label) +
+    labs(title = title_label, subtitle = NULL) +  # short title only, no subtitle
+    theme(
+      plot.title      = element_text(size = 9, face = "bold", hjust = 0.5),
+      legend.position = "none"  # remove individual legends
+    )
+}
+
+# Build all plots
+p_total  <- plot_cog("total_CalcMass_kg", "Total Calculated Mass") +
+  labs(subtitle = NULL) +
+  theme(
+    plot.title      = element_text(size = 11, face = "bold", hjust = 0.5),
+    legend.position = "none"
+  )
+
+p_cdte   <- clean_cog("total_CdTe_g",       "Cadmium Telluride")
+p_copper <- clean_cog("total_Copper_g",      "Copper")
+p_al     <- clean_cog("total_Aluminum_kg",   "Aluminum")
+p_steel  <- clean_cog("total_Steel_kg",      "Steel")
+p_eva    <- clean_cog("total_EVA_kg",        "EVA Encapsulant")
+p_glass  <- clean_cog("total_GlassMass_kg",  "Glass Mass")
+
+# Extract legend from one plot to use as shared legend
+shared_legend <- cowplot::get_legend(
+  plot_cog("total_CalcMass_kg", "") +
+    theme(
+      legend.position  = "right",
+      legend.title     = element_text(size = 9, face = "bold"),
+      legend.key.height = unit(1.5, "cm")
+    )
+)
+
+# Build layout — total on top full width, materials in 2-col grid below
+main_plot <- p_total /
+  (p_cdte  | p_copper) /
+  (p_al    | p_steel)  /
+  (p_eva   | p_glass)  +
+  plot_layout(heights = c(1.5, 1, 1, 1)) +  # top panel slightly taller
+  plot_annotation(
+    title    = "Center of Gravity Migration by Material Type",
+    subtitle = "Cumulative weighted CoG shift over time — national view",
+    theme = theme(
+      plot.title    = element_text(face = "bold", size = 14),
+      plot.subtitle = element_text(size = 10, color = "grey40")
+    )
+  )
+
+# Combine main plot with shared legend on the right
+cowplot::plot_grid(main_plot, shared_legend,
+                  ncol         = 2,
+                  rel_widths   = c(1, 0.08))  # legend takes ~8% of width
+```
+
+
+```{r Checking Source of MW estimations to determine reliablility in the future analysis}
+thin_film_df %>%
+  group_by(Source) %>%
+  summarise(n_arrays = n(), .groups = "drop") %>%
+  mutate(pct = round(n_arrays / 456 * 100, 1)) %>%
+  arrange(desc(n_arrays)) %>%
+  print(n = Inf)
+
+```
+
+
+```{r}
+magma(10)[10]
+```
+
+### Conclusion Stuff 
+```{r}
+# Total modules, capacity, and arrays nationwide
+thin_film_df %>%
+  summarise(
+    total_arrays   = n(),
+    total_modules  = sum(num_modules, na.rm = TRUE),
+    total_cap_MW   = sum(capMW_total, na.rm = TRUE),
+    total_CdTe_t   = sum(total_CdTe_g, na.rm = TRUE) / 1e6,
+    total_Al_t     = sum(total_Aluminum_kg, na.rm = TRUE) / 1e3,
+    total_Steel_t  = sum(total_Steel_kg, na.rm = TRUE) / 1e3,
+    total_EVA_t    = sum(total_EVA_kg, na.rm = TRUE) / 1e3,
+    total_Copper_t = sum(total_Copper_g, na.rm = TRUE) / 1e6,
+    total_Glass_t     = sum(total_GlassMass_kg, na.rm = TRUE) / 1e3,
+    total_CalcMass_t  = sum(total_CalcMass_kg,  na.rm = TRUE) / 1e3
+  )
+```
+
+
+```{r By series summary}
+thin_film_df %>%
+  group_by(predicted_series) %>%
+  summarise(
+    num_arrays        = n(),
+    total_modules     = sum(num_modules,        na.rm = TRUE),
+    total_cap_MW      = sum(capMW_total,         na.rm = TRUE),
+    total_CdTe_t      = sum(total_CdTe_g,        na.rm = TRUE) / 1e6,
+    total_Al_t        = sum(total_Aluminum_kg,   na.rm = TRUE) / 1e3,
+    total_Steel_t     = sum(total_Steel_kg,      na.rm = TRUE) / 1e3,
+    total_EVA_t       = sum(total_EVA_kg,        na.rm = TRUE) / 1e3,
+    total_Copper_t    = sum(total_Copper_g,      na.rm = TRUE) / 1e6,
+    total_Glass_t     = sum(total_GlassMass_kg,  na.rm = TRUE) / 1e3,
+    total_CalcMass_t  = sum(total_CalcMass_kg,   na.rm = TRUE) / 1e3,
+    .groups = "drop"
+  ) %>%
+  mutate(
+    pct_arrays    = round(100 * num_arrays    / sum(num_arrays),    1),
+    pct_modules   = round(100 * total_modules / sum(total_modules), 1),
+    pct_cap       = round(100 * total_cap_MW  / sum(total_cap_MW),  1),
+    pct_Glass     = round(100 * total_Glass_t / sum(total_Glass_t), 1),
+    pct_CalcMass  = round(100 * total_CalcMass_t / sum(total_CalcMass_t), 1)
+  ) %>%
+  arrange(predicted_series)
+```
+
+```{r By Series: Material Intensity (kg per MW)}
+thin_film_df %>%
+  group_by(predicted_series) %>%
+  summarise(
+    total_cap_MW     = sum(capMW_total,        na.rm = TRUE),
+    total_CdTe_kg    = sum(total_CdTe_g,       na.rm = TRUE) / 1e3,   # g → kg
+    total_Al_kg      = sum(total_Aluminum_kg,  na.rm = TRUE),
+    total_Steel_kg   = sum(total_Steel_kg,     na.rm = TRUE),
+    total_Copper_kg  = sum(total_Copper_g,     na.rm = TRUE) / 1e3,   # g → kg
+    total_Glass_kg   = sum(total_GlassMass_kg, na.rm = TRUE),
+    total_CalcMass_kg = sum(total_CalcMass_kg, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  mutate(
+    CdTe_kg_per_MW     = round(total_CdTe_kg     / total_cap_MW, 2),
+    Al_kg_per_MW       = round(total_Al_kg        / total_cap_MW, 2),
+    Steel_kg_per_MW    = round(total_Steel_kg     / total_cap_MW, 2),
+    Copper_kg_per_MW   = round(total_Copper_kg    / total_cap_MW, 2),
+    Glass_kg_per_MW    = round(total_Glass_kg     / total_cap_MW, 2),
+    CalcMass_kg_per_MW = round(total_CalcMass_kg  / total_cap_MW, 2)
+  ) %>%
+  select(predicted_series, ends_with("_per_MW"))
+```
+
+
+
+```{r Top 10 States}
+thin_film_df %>%
+  group_by(state_name) %>%
+  summarise(
+    num_arrays        = n(),
+    total_modules     = sum(num_modules,        na.rm = TRUE),
+    total_cap_MW      = sum(capMW_total,         na.rm = TRUE),
+    total_CdTe_t      = sum(total_CdTe_g,        na.rm = TRUE) / 1e6,
+    total_Al_t        = sum(total_Aluminum_kg,   na.rm = TRUE) / 1e3,
+    total_Steel_t     = sum(total_Steel_kg,      na.rm = TRUE) / 1e3,
+    total_Copper_t    = sum(total_Copper_g,      na.rm = TRUE) / 1e6,
+    total_Glass_t     = sum(total_GlassMass_kg,  na.rm = TRUE) / 1e3,
+    total_CalcMass_t  = sum(total_CalcMass_kg,   na.rm = TRUE) / 1e3,
+    .groups = "drop"
+  ) %>%
+  mutate(
+    pct_modules        = round(100 * total_modules   / sum(total_modules),   1),
+    pct_CdTe           = round(100 * total_CdTe_t    / sum(total_CdTe_t),    1),
+    pct_Al             = round(100 * total_Al_t       / sum(total_Al_t),      1),
+    pct_Steel          = round(100 * total_Steel_t    / sum(total_Steel_t),   1),
+    pct_Glass          = round(100 * total_Glass_t    / sum(total_Glass_t),   1),
+    pct_CalcMass       = round(100 * total_CalcMass_t / sum(total_CalcMass_t),1),
+    CdTe_t_per_MW      = round(total_CdTe_t    / total_cap_MW, 4),
+    Al_t_per_MW        = round(total_Al_t       / total_cap_MW, 3),
+    Steel_t_per_MW     = round(total_Steel_t    / total_cap_MW, 3),
+    Glass_t_per_MW     = round(total_Glass_t    / total_cap_MW, 3),
+    CalcMass_t_per_MW  = round(total_CalcMass_t / total_cap_MW, 3)
+  ) %>%
+  arrange(desc(total_modules)) %>%
+  slice_head(n = 10)
+
+```
+
+```{r Array Characteristics by Series}
+thin_film_df %>%
+  group_by(predicted_series) %>%
+  summarise(
+    avg_modules_per_array = mean(num_modules,  na.rm = TRUE),
+    avg_cap_MW_per_array  = mean(capMW_total,   na.rm = TRUE),
+    median_cap_MW         = median(capMW_total, na.rm = TRUE),
+    avg_area_m2           = mean(totRowArea,    na.rm = TRUE),
+    avg_efficiency        = mean(effInit,       na.rm = TRUE),
+    avg_cap_MW            = mean(capMW,         na.rm = TRUE),
+    .groups = "drop"
+  )
+```
+
+
+
+```{r Distribution of Arrays, Modules, and Capacity by Series}
+library(tidyverse)
+
+figure5_data <- thin_film_df %>%
+  group_by(predicted_series) %>%
+  summarise(
+    num_arrays    = n(),
+    total_modules = sum(num_modules,  na.rm = TRUE),
+    total_cap_MW  = sum(capMW_total,   na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  mutate(
+    pct_arrays   = round(100 * num_arrays    / sum(num_arrays),    1),
+    pct_modules  = round(100 * total_modules / sum(total_modules), 1),
+    pct_capacity = round(100 * total_cap_MW  / sum(total_cap_MW),  1)
+  ) %>%
+  select(predicted_series, pct_arrays, pct_modules, pct_capacity) %>%
+  # Pivot to long format so all three metrics can be mapped to fill in one ggplot call
+  pivot_longer(
+    cols      = c(pct_arrays, pct_modules, pct_capacity),
+    names_to  = "metric",
+    values_to = "percentage"
+  ) %>%
+  mutate(
+    metric = recode(metric,
+      "pct_arrays"   = "Arrays (%)",    # share of total array count — how many distinct installations used each series
+      "pct_modules"  = "Modules (%)",   # share of total module count — physical panel count, shaped by module size differences across series
+      "pct_capacity" = "Capacity (%)"   # share of total installed MW — energy contribution of each series
+    ),
+    # Set factor order so bars display in a logical sequence in the legend and plot
+    metric = factor(metric, levels = c("Arrays (%)", "Modules (%)", "Capacity (%)"))
+  )
+
+ggplot(figure5_data, aes(x = percentage, y = predicted_series, fill = metric)) +
+  # Dodged bars so all three metrics appear side-by-side for each series
+  geom_bar(stat = "identity", position = "dodge", width = 0.7,
+           color = "black", linewidth = 0.3) +
+  # Percentage labels placed just outside each bar end for easy reading
+  geom_text(aes(label = paste0(percentage, "%"), x = percentage),
+            position = position_dodge(width = 0.7),
+            vjust = 0.4, hjust = -0.1, size = 2.8, fontface = "bold") +
+  # Manual colors chosen to be distinct and colorblind-accessible
+  scale_fill_manual(values = c(
+    "Arrays (%)"   = "dodgerblue4",
+    "Modules (%)"  = "mediumpurple2",
+    "Capacity (%)" = "forestgreen"
+  )) +
+  # x-axis starts at 0; upper limit of 50 gives room for labels beyond the bars
+  scale_x_continuous(limits = c(0, 50), breaks = seq(0, 45, 10),
+                     expand = expansion(mult = c(0, 0.05))) +
+  labs(
+    title    = "Distribution of Arrays, Modules, and Installed Capacity by CdTe Module Series",
+    subtitle = "Percentage of national totals across First Solar Series 2–7",
+    x        = "Percentage of National Total (%)",
+    y        = "Module Series",
+    fill     = "Metric"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(
+    plot.title         = element_text(face = "bold", size = 13),
+    plot.subtitle      = element_text(size = 10, color = "grey40"),
+    legend.position    = "top",
+    legend.text        = element_text(size = 10),
+    legend.title       = element_text(size = 10, face = "bold"),
+    axis.text.x        = element_text(size = 10),
+    axis.text.y        = element_text(face = "bold", size = 11),
+    panel.grid.major.y = element_blank(),   # remove horizontal gridlines; bars carry the comparison
+    panel.grid.minor   = element_blank(),
+    plot.background    = element_rect(fill = "white", color = NA),
+    panel.background   = element_rect(fill = "white", color = NA)
+  )
+```
+
+
+
+
