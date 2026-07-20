@@ -1,7 +1,7 @@
 """GMSEUS configuration. Loaded via gmseusUtils.load_config()."""
 
-currentVersion = 'v2_0'
-mostRecentInstallYear = 2025
+currentVersion = 'v2_1'
+mostRecentInstallYear = 2026
 minPanelRowArea = 15
 maxPanelRowArea = 2750
 minNumPanelRows = 2

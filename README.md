@@ -6,20 +6,12 @@
 Code repository for creating and maintaining the Ground-Mounted Solar Energy in the United States (GM-SEUS) spatiotemporal dataset of solar arrays and panel-rows using existing datasets, machine learning, and object-based image analysis to enhance existing sources. A [peer-reviewed article](http://doi.org/10.1038/s41597-025-05862-4) describing the purpose and methods behind GM-SEUS was published in Scientific Data on September 29, 2025.
 
 ## Current Version Notes
-This is the 2025 release of GM-SEUS (version 2.0). All input datasets and solar panel-row delineation results are up-to-date through November 7th, 2025. The Zenodo repository for the dataset, version notes, and documentation can be found [here](https://doi.org/10.5281/zenodo.14827818), and for the current code version can be found [here](https://doi.org/10.5281/zenodo.14829529).
+This is the 2025 release of GM-SEUS (version 2.1). All input datasets and solar panel-row delineation results are up-to-date through November 7th, 2025, with USPVDB updated on July 9th, 2026. The Zenodo repository for the dataset, version notes, and documentation can be found [here](https://doi.org/10.5281/zenodo.14827818), and for the current code version can be found [here](https://doi.org/10.5281/zenodo.14829529).
 
-### v2.0 Technical Updates
-* Updated all source datasets to latest versions (as of 11-07-2025)  
-* Added **CEC Solar Footprints in California (CECSFC)** and **Global Renewables Watch (GRW)** polygon datasets  
-* Added **24,182 hand-delineated panel-rows** (5.29 km²) across 1,485 arrays  
-* Expanded dataset with **24.4 km² new array area (95 arrays)**, **89 new arrays (17.4 km²)**, and georeferenced metadata for **1,225 arrays**
-* Added **ground cover management practice attribute (`grndCvr`)**, derived from NREL InSPIRE (agrivoltaic arrays = *vegetation*) and California Energy Commission (parking lot arrays = *impervious*)  
-* Added **reported and estimated AC capacity attributes (`capMWAC` and `capMWACest`)**
-* Implemented new **reverse temporal segmentation** method for installation year (inspired by [Cullerton et al., 2025](https://doi.org/10.1016/j.srs.2025.100322)), extending range to 2006–2024 (MAE: 1.84 years)  
-* Added documentation for panel-row digitization and array georeferencing workflows  
-* Centralized core utilities: `osmUtils.py`, `gmseusUtils.py`, and `geeUtils.js`  
-* Consolidated installation year validation into a single Google Earth Engine script  
-* Updated CRS for SHP and GPKG outputs to **EPSG:6350**  
+All technical updates are now documented in the `CHANGELOG.md`. Notable changes: 
+* project name added as a stable attribute
+* storage presence, capacity, and installation year added
+* modType attribute now differentiates between thin-film technologies using EIA Form 860 data
 
 # Product Description
 
@@ -27,7 +19,7 @@ This is the 2025 release of GM-SEUS (version 2.0). All input datasets and solar 
 
 Solar energy generating systems are critical components of our expanding energy infrastructure, yet available datasets remain incomplete or not publicly available–particularly at the sub-array level. Combining the best open-access datasets in the US with image analysis on freely available remotely-sensed imagery, we present the Ground-Mounted Solar Energy in the United States (GM-SEUS) dataset, a harmonized, open access geospatial and temporal repository of solar energy arrays and panel-rows.
 
-GM-SEUS v2.0 includes 18,980 commercial- and utility-scale ground-mounted solar photovoltaic and concentrating solar energy arrays (292 GW<sub>DC</sub>), spanning 3,817 km<sup>2</sup>. Of these, 12,739 arrays (112 GW<sub>DC</sub>) include detailed panel-row geometries, comprising 3.43 million unique solar panel-rows across 527 km<sup>2</sup>. When restricted to arrays verifiable through high-resolution satellite and aerial imagery (hand-delineated spatial data sources and/or containing panel-row information ~ low commission error), the dataset contains 15,744 arrays, representing 204 GW<sub>DC</sub> and 2,586 km<sup>2</sup>.
+GM-SEUS v2.1 includes 18,502 commercial- and utility-scale ground-mounted solar photovoltaic and concentrating solar energy arrays (228 GW<sub>DC</sub>), spanning 3,686 km<sup>2</sup>. Of these, 12,446 arrays (95 GW<sub>DC</sub>) include detailed panel-row geometries, comprising 3.43 million unique solar panel-rows across 527 km<sup>2</sup>. When restricted to arrays verifiable through high-resolution satellite and aerial imagery (hand-delineated spatial data sources and/or containing panel-row information ~ low commission error), the dataset contains 15,835 arrays, representing 179 GW<sub>DC</sub> and 3,032 km<sup>2</sup>.
 
 We use these newly compiled and delineated solar arrays and panel-rows to harmonize and independently estimate value-added attributes to existing datasets including installation year, azimuth, mount technology, panel-row area and dimensions, inter-row spacing, ground cover ratio, tilt, and installed capacity. By estimating and harmonizing these attributes of the distributed US solar energy landscape, GM-SEUS supports diverse applications in renewable energy modeling, ecosystem service assessment, and infrastructure planning. 
 
@@ -57,16 +49,16 @@ Spatial context was incorporated using object-based imagery analysis methods, in
 
 ### Array Polygon-Level Data
 
-* **Ground-Mounted Solar Energy in the US (GMSEUS) Array and Panels**: Arrays downloaded from [GMSEUS Portal](https://doi.org/10.5281/zenodo.14827818), Last Download: 08-20-2025 (Up-to-date as of 11-07-2025), Version 1.0
-  * GMSEUS v1.0 panel rows were contained within the repository, while newly digitized panel-rows used in this work were stored and downloaded from [Zenodo Portal](https://doi.org/10.5281/zenodo.17042798). These new panel-rows were also uploaded to OpenStreetMap as part of the current GM-SEUS version, independently of other products.
+* **Ground-Mounted Solar Energy in the US (GMSEUS) Array and Panels**: Arrays downloaded from [GMSEUS Portal](https://doi.org/10.5281/zenodo.14827818), Last Download: 07-09-2026 (Up-to-date as of 07-09-2026), Version 2.0
+  * GMSEUS v2.0 panel rows were contained within the repository, while newly digitized panel-rows used in this work were stored and downloaded from [Zenodo Portal](https://doi.org/10.5281/zenodo.17042798). These new panel-rows were also uploaded to OpenStreetMap as part of the current GM-SEUS version, independently of other products.
   * We also digitized and georeferenced the remaining point-level array data from version 1.0. These were stored locally and are included as part of the current GM-SEUS version.
 
-* **GM-SEUS Digitized and Georeferenced Arrays**: Downloaded from Google Earth Engine assets, Last Download: 09-30-2025 (Up-to-date as of 11-07-2025), Unpublished dataset prepared for this GM-SEUS version
+* **GM-SEUS Digitized and Georeferenced Arrays**: Downloaded from Google Earth Engine assets, Last Download: 07-09-2026 (Up-to-date as of 07-09-2026), Unpublished dataset prepared from GM-SEUS v2.0, reprocessed for this version
 
 * **GM-SEUS Digitized Panel-Rows**: Panel-rows downloaded from [Zenodo](https://doi.org/10.5281/zenodo.17042798), Last Download: 09-12-2025 (Up-to-date as of 11-07-2025), Version 1.1
   * Created for this GM-SEUS version. Note: v2.0 existed internally, but v1.1 was never formally released.
 
-* **United States Solar Photovoltaic Database (USPVDB)**: Downloaded from [USPVDB Portal](https://eerscmap.usgs.gov/uspvdb/data/), Last Download: 08-25-2025 (Up-to-date as of 11-07-2025), Version 3.0
+* **United States Solar Photovoltaic Database (USPVDB)**: Downloaded from [USPVDB Portal](https://eerscmap.usgs.gov/uspvdb/data/), Last Download: 07-13-2026 (Up-to-date as of 07-13-2026), Version 4.0
 
 * **California Energy Commission (CEC) Solar Footprints in California (SFC)**: Downloaded from [CEC Portal](https://cecgis-caenergy.opendata.arcgis.com/datasets/CAEnergy::solar-footprints-in-california/explore), more information at [CA Open Data Portal](https://lab.data.ca.gov/dataset/solar-footprints-in-california), Last Download: 09-12-2025 (Up-to-date as of 11-07-2025), Version - Last updated: September 12, 2025; Created: July 2, 2025
 
@@ -201,7 +193,7 @@ Files are within subdirectories **GPKG**, **SHP**, and **CSV**. All data product
 
 ### The GM-SEUS v2.0 data repository contains the following files
 
-* **GMSEUS_Arrays_Final_2025_v2_0**: Final array dataset containing boundaries from existing datasets and enhanced by buffer-dissolve-erode technique with GM-SEUS panel-rows containing all array-level attributes (EPSG:6350), geopackage, shapefile, and csv
+* **GMSEUS_Arrays_Final_2025_v2_1**: Final array dataset containing boundaries from existing datasets and enhanced by buffer-dissolve-erode technique with GM-SEUS panel-rows containing all array-level attributes (EPSG:6350), geopackage, shapefile, and csv
 * **GMSEUS_Panels_Final_2025_v2_0**: Final panel-row dataset containing boundaries from existing datasets and newly delineated GM-SEUS panel-rows containing all panel-row-level attributes (EPSG:6350),  geopackage, shapefile, and csv
 * **GMSEUS_NAIP_Arrays_2025_v2_0**: All array boundaries created by buffer-dissolve-erode method of newly delineated (NAIP) GM-SEUS panel-rows (EPSG:6350),  geopackage, shapefile, and csv
 * **GMSEUS_NAIP_Panels_2025_v2_0**: All newly delineated panel-row boundaries (EPSG:6350), geopackage, shapefile, and csv
@@ -210,13 +202,15 @@ Files are within subdirectories **GPKG**, **SHP**, and **CSV**. All data product
 * **NAIPtrainRF**: Training dataset of 12,000 NAIP training points (2,000 class<sup>-2</sup>) containing class values, spectral index values, the year of NAIP imagery accessed, and point coordinates (WGS84), comma separated values
 * **NAIPclassifyRF**: Random forest classifier trees and weights as output from Google Earth Engine classifier, comma separated values
 * **LabeledImages**: Directory containing image and mask subdirectories with ~17,500 input and target images for deep learning pattern recognition applications, GeoTIFF
-  * NOTE: As of v2.0, NAIPtrainRF, NAIPclassifyRF, and LabeledImages have not been updated beyond v1.0.
+  * NOTE: As of v2.1, NAIPtrainRF, NAIPclassifyRF, and LabeledImages have not been updated beyond v1.0.
 
 ### We provide the following attribute fields in GM-SEUS Final Arrays
 
 * **arrayID**: unique numeric ID of each solar array in GM-SEUS, unitless  
 * **Source**: array boundary source from existing datasets, unitless  
+* **sourceConf**: geometry confidence rating (`high`, `medium`, or `low`) derived from the array **Source** and panel-row presence 
 * **nativeID**: numeric ID of each solar array from the source spatial dataset if an indexing system existed, unitless  
+* **name**: project name from source datasets where available, unitless   
 * **latitude**: latitude of the array boundary centroid (NAD83), decimal degrees  
 * **longitude**: longitude of the array boundary centroid (NAD83), decimal degrees  
 * **newBound**: binary, whether the array boundary was derived from the existing data sources (0) or from a buffer-dissolve-erode of panel-rows following our definition of an array boundary (1), unitless  
@@ -229,6 +223,7 @@ Files are within subdirectories **GPKG**, **SHP**, and **CSV**. All data product
 * **capMWDCest**: estimated installed peak capacity derived from capacity to panel-row area relationships independent of any data source, MWDC or MWth 
 * **capMWAC**: installed AC capacity from existing sources, with gaps filled using **capMWACest**, MWAC  
 * **capMWACest**: estimated AC capacity derived from DC capacity (reported or estimated) using DC-to-AC conversion assumptions, independent of any external AC data source, MWAC  
+* **modType**: reported panel-row (module) technology at the array level (`c-si`, `mono-c-si`, `multi-c-si`, `csp`, and `thin-film` separated into `cdte`, `cigs`, `a-si`, and `thin-film-other` using EIA Form 860 data where available). If unreported, assumed to be `c-si`, unitless  
 * **modType**: reported panel-row (module) technology at the array level (c-si, mono-c-si, multi-c-si, thin-film, csp). If unreported, assumed to be c-si, unitless  
 * **effInit**: initial panel-rows efficiency from existing sources with gaps filled in based on efficiency estimation from **modType** and **instYr** taken from the annual Tracking the Sun report, %  
 * **GCR1**: 0-1, the ratio of **totRowArea** to the total area of panel-rows and the space between them. For arrays with complete panel delineation and arrays where **newBound** is 1, this is equivalent to **totArea**. This is also called packing factor. If **numRow** is greater than 0, **GCR1** is an actual **GCR1** for the array. Otherwise, **GCR1** is estimated by linear regression of latitude and longitude by mount and module type, unitless  
@@ -240,6 +235,11 @@ Files are within subdirectories **GPKG**, **SHP**, and **CSV**. All data product
 * **avgLength**: median length of the long edge of panel-rows within an array, meters  
 * **avgWidth**: median length of the short edge of panel-rows within an array, meters  
 * **avgSpace**: median spacing between the solar array rows, in meters, between edges of the panel-row projected onto the ground, meters  
+* **storage**: whether the array is co-located with battery storage (`Yes`, `No`, or `Unknown`), from USPVDB and LBNL USS, unitless  
+* **storTech**: storage technology type (e.g., lithium-ion), from LBNL USS, unitless  
+* **storMW**: storage power capacity, from LBNL USS, MW  
+* **storMWh**: storage energy capacity, from LBNL USS, MWh  
+* **storInstYr**: storage installation year, from LBNL USS, year  
 * **grndCvr**: ground cover management classification derived from external datasets, with agrivoltaic arrays labeled as `vegetation` (from NREL InSPIRE) and parking-lot arrays labeled as `impervious` (from California Energy Commission). Else, `unknown`, unitless  
 * **STATEFP**: unique geographic identifier for the U.S. Census Bureau state entity, unitless  
 * **COUNTYFP**: unique geographic identifier for the U.S. Census Bureau county entity, unitless  
