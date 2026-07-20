@@ -236,9 +236,10 @@ def getIoU(gdf1, gdf2):
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ GM-SEUS General Functions
 
 # Function to format the existing solar array datasets to the desired schema
-def formatDf(df, nativeIdentifier, installationYear, capacityMWdc, capacityMWac, area_m2, moduleType, groundCover, azimuth, tilt, mountTechnology, source):
+def formatDf(df, nativeIdentifier, name, installationYear, capacityMWdc, capacityMWac, storage, storTech, storMW, storMWh, storInstYr, area_m2, moduleType, groundCover, azimuth, tilt, mountTechnology, source):
     # Change column names to match the schema
-    df = df.rename(columns={nativeIdentifier: 'nativeID', capacityMWdc: 'capMWDC', capacityMWac: 'capMWAC', area_m2: 'area', installationYear: 'instYr', moduleType: 'modType', azimuth: 'azimuth', tilt: 'tilt', mountTechnology: 'mount', groundCover: 'grndCvr', source: 'Source'})
+    df = df.rename(columns={nativeIdentifier: 'nativeID', name: 'name', capacityMWdc: 'capMWDC', capacityMWac: 'capMWAC', storage: 'storage', storTech: 'storTech', storMW: 'storMW', storMWh: 'storMWh', storInstYr: 'storInstYr', 
+                            area_m2: 'area', installationYear: 'instYr', moduleType: 'modType', azimuth: 'azimuth', tilt: 'tilt', mountTechnology: 'mount', groundCover: 'grndCvr', source: 'Source'})
 
     # Set Source. If any Source is missing, print a warning.
     df['Source'] = df['Source'].fillna(source)
@@ -249,19 +250,31 @@ def formatDf(df, nativeIdentifier, installationYear, capacityMWdc, capacityMWac,
     # Fill empy numeric column rows with -9999, and empty string column rows with NaN
     df['capMWDC'] = df['capMWDC'].fillna(-9999)
     df['capMWAC'] = df['capMWAC'].fillna(-9999)
+    df['storMW'] = df['storMW'].fillna(-9999)
+    df['storMWh'] = df['storMWh'].fillna(-9999)
+    df['storInstYr'] = df['storInstYr'].fillna(-9999)
     df['area'] = df['area'].fillna(-9999)
     df['instYr'] = df['instYr'].fillna(-9999)
     df['azimuth'] = df['azimuth'].fillna(-9999)
     df['tilt'] = df['tilt'].fillna(-9999)
+    df['name'] = df['name'].fillna('')
     df['modType'] = df['modType'].fillna('')
+    df['storage'] = df['storage'].fillna('')
+    df['storTech'] = df['storTech'].fillna('')
     df['grndCvr'] = df['grndCvr'].fillna('')
     df['mount'] = df['mount'].fillna('')
 
     # Force data types to match schema
     df['nativeID'] = df['nativeID'].astype(str)
+    df['name'] = df['name'].astype(str)
     df['instYr'] = df['instYr'].astype(int)
     df['capMWDC'] = df['capMWDC'].astype(float)
     df['capMWAC'] = df['capMWAC'].astype(float)
+    df['storage'] = df['storage'].astype(str)
+    df['storTech'] = df['storTech'].astype(str)
+    df['storMW'] = df['storMW'].astype(float)
+    df['storMWh'] = df['storMWh'].astype(float)
+    df['storInstYr'] = df['storInstYr'].astype(int)
     df['area'] = df['area'].astype(float)
     df['azimuth'] = df['azimuth'].astype(float)
     df['tilt'] = df['tilt'].astype(float)
@@ -273,13 +286,158 @@ def formatDf(df, nativeIdentifier, installationYear, capacityMWdc, capacityMWac,
     df['mount'] = df['mount'].str.lower() # Ensure mount is lowercase
 
     # As a default, if modType is not in the accepted potential module types, set to c-si.
-    potentialModTypes = ['mono-c-si', 'multi-c-si', 'c-si', 'csp', 'thin-film']
+    potentialModTypes = ['mono-c-si', 'multi-c-si', 'c-si', 'cdte', 'cigs', 'a-si', 'thin-film', 'thin-film-other', 'csp']
     df.loc[~df['modType'].isin(potentialModTypes), 'modType'] = 'c-si'
 
     # Select schema columns
-    df = df[['nativeID', 'instYr', 'capMWDC', 'capMWAC', 'area', 'modType', 'grndCvr', 'azimuth', 'tilt', 'mount', 'Source', 'geometry']]
+    df = df[['nativeID', 'name', 'instYr', 'capMWDC', 'capMWAC', 'storage', 'storTech', 'storMW', 'storMWh', 'storInstYr', 'area', 'modType', 'grndCvr', 'azimuth', 'tilt', 'mount', 'Source', 'geometry']]
     df = df.reset_index(drop=True)
     return df
+
+# Function to copy EIA Form 860 mod type data over to a target df
+def copyEIA860ModType(targetDF, targetEIA_ID, targetTechCol, eiaPath,
+                      eiaID='Plant Code', tfLabel='thin-film', techMap=None,
+                      outCol=None, refineMixed=True, eiaAllDF=None,
+                      returnEIA=False, verbose=True):
+    """
+    Refine a generic thin-film tech label in any dataset (USPVDB, LBNL USS,
+    ...) using module technology flags stacked from all EIA Form 860
+    vintages found under eiaPath.
+
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    pseudo code
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    if a pre-stacked EIA frame was not passed in:
+        find every 3_3_Solar* workbook under eiaPath (any extension),
+            skipping Excel lock files
+        for each workbook: parse vintage year from filename, read every
+            Operable / Retired sheet with the true header row, normalize
+            column-name whitespace, tag rows with vintage_year
+        concatenate all sheets from all vintages into one frame
+    normalize join keys on both sides to nullable Int64
+    normalize EIA thin-film flag columns to Y / N / NaN (blank = no info)
+    collapse generator rows to plant-year: any Y that year -> Y, else N,
+        all blank -> NaN
+    coalesce across vintages: sort by year, take most recent non-null
+        flag value per plant (empty later filings cannot erase earlier ones)
+    derive one subtype per plant:
+        exactly one flag Y  -> that subtype
+        multiple flags Y    -> 'thin-film-other'
+        no flag Y           -> NaN (no enrichment possible)
+    copy targetTechCol into outCol, then (case-insensitive comparison):
+        rows equal to tfLabel        -> mapped subtype where available,
+                                        else unchanged
+        mixed labels containing
+        tfLabel plus a comma         -> set to tfLabel (if refineMixed)
+        all other labels             -> unchanged
+    return enriched targetDF (and the stacked EIA frame if returnEIA)
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+    targetDF       dataframe/GeoDataFrame to enrich (uspvdb, lbnlUSS, ...)
+    targetEIA_ID   plant id column in targetDF ('eia_id', 'EIA ID', ...)
+    targetTechCol  tech label column in targetDF
+                   ('p_tech_sec', 'Solar Tech Sub', ...)
+    eiaPath        root directory containing the Form 860 vintages; searched
+                   recursively for 3_3_Solar* files (ignored if eiaAllDF
+                   is provided)
+    eiaID          plant id column in the EIA workbooks
+    tfLabel        the generic thin-film value in targetTechCol; matched
+                   case-insensitively ('thin-film' matches 'Thin-Film')
+    outCol         output column name; default targetTechCol + '_detailed'
+    refineMixed    if True, comma-separated labels containing tfLabel are
+                   collapsed to tfLabel (USPVDB behavior)
+    eiaAllDF       optional pre-stacked EIA frame with vintage_year; skips
+                   the file-reading step (reuse across multiple targets)
+    returnEIA      if True, return (targetDF, eiaAllDF) so the stacked
+                   frame can be reused without re-reading the workbooks
+    """
+    import glob, os, re
+    import numpy as np
+    import pandas as pd
+
+    if techMap is None:
+        techMap = {'Thin-Film (CdTe)?':  'cdte',
+                   'Thin-Film (A-Si)?':  'a-si',
+                   'Thin-Film (CIGS)?':  'cigs',
+                   'Thin-Film (Other)?': 'thin-film-other'}
+    techCols = list(techMap.keys())
+    if outCol is None:
+        outCol = f'{targetTechCol}_detailed'
+
+    # ~~~ stack all Form 860 vintages from disk (unless supplied) ~~~~~~~~~~~
+    if eiaAllDF is None:
+        solarFiles = sorted(glob.glob(os.path.join(eiaPath, '**', '3_3_Solar*'),
+                                      recursive=True))
+        solarFiles = [f for f in solarFiles
+                      if not os.path.basename(f).startswith('~$')]
+        if verbose:
+            print(f'Found {len(solarFiles)} solar files under {eiaPath}')
+        frames = []
+        for f in solarFiles:
+            yr = int(re.search(r'Y?(20\d{2})', os.path.basename(f)).group(1))
+            xl = pd.ExcelFile(f)
+            for sheet in xl.sheet_names:
+                if not re.search(r'operable|retired', sheet, re.I):
+                    continue
+                df = pd.read_excel(xl, sheet_name=sheet, header=1)
+                df.columns = [re.sub(r'\s+', ' ', str(c)).strip()
+                              for c in df.columns]
+                df['vintage_year'] = yr
+                frames.append(df)
+        eiaAllDF = pd.concat(frames, ignore_index=True)
+        if verbose:
+            print(f"Vintages: {sorted(eiaAllDF['vintage_year'].unique())}")
+
+    targetDF = targetDF.copy()
+    eia = eiaAllDF.copy()
+
+    # ~~~ normalize keys and flags ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    eia[eiaID] = pd.to_numeric(eia[eiaID], errors='coerce').astype('Int64')
+    eia = eia.dropna(subset=[eiaID])
+    targetDF[targetEIA_ID] = pd.to_numeric(targetDF[targetEIA_ID],
+                                           errors='coerce').astype('Int64')
+    for col in techCols:
+        if col not in eia.columns:
+            eia[col] = np.nan
+        s = eia[col].astype(str).str.strip().str.upper()
+        eia[col] = s.where(s.isin(['Y', 'N']))          # blank/junk -> NaN
+
+    # ~~~ generators -> plant-year, coalesce across vintages ~~~~~~~~~~~~~~~~
+    def anyY(s):
+        if (s == 'Y').any(): return 'Y'
+        if (s == 'N').any(): return 'N'
+        return np.nan
+    plantFlags = (eia.groupby([eiaID, 'vintage_year'])[techCols].agg(anyY)
+                     .reset_index()
+                     .sort_values('vintage_year')       # newest last
+                     .groupby(eiaID)[techCols].last())  # most recent non-null
+
+    # ~~~ one subtype per plant ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    def pickSubtype(row):
+        hits = [lab for col, lab in techMap.items() if row[col] == 'Y']
+        if len(hits) == 0: return np.nan
+        if len(hits) == 1: return hits[0]
+        return 'thin-film-other'                        # mixed subtypes
+    tfLookup = plantFlags.apply(pickSubtype, axis=1).dropna()
+
+    # ~~~ apply to target ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    targetDF[outCol] = targetDF[targetTechCol]
+    tech = targetDF[targetTechCol].astype(str).str.strip().str.lower()
+    tfl = tfLabel.strip().lower()
+    tfMask = tech == tfl                                # pure thin-film rows
+    mapped = targetDF.loc[tfMask, targetEIA_ID].map(tfLookup)
+    targetDF.loc[tfMask, outCol] = mapped.fillna(
+        targetDF.loc[tfMask, targetTechCol])
+    if refineMixed:                                     # e.g. 'c-si,thin-film'
+        mixedMask = tech.str.contains(tfl, regex=False) & tech.str.contains(',')
+        targetDF.loc[mixedMask, outCol] = tfLabel
+    if verbose:
+        print(f'{tfMask.sum()} {tfLabel} rows, '
+              f'{mapped.notna().sum()} refined via EIA')
+
+    if returnEIA:
+        return targetDF, eiaAllDF
+    return targetDF
 
 # Function to assign mount type to solar panel-rows based on azimuth and panel geometry. Also returns all relevant design parameters for each panel-row. Requires the setting of a length ratio threshold and an area ratio threshold.
 def assignMountType(feature):
@@ -496,8 +654,10 @@ def dropSelfOverlapGDF(gdf: gpd.GeoDataFrame, unbuffer_m: float = 1.0) -> gpd.Ge
         tmp["geometry"] = tmp.geometry.buffer(0)                    # light make-valid
         tmp["geometry"] = tmp.geometry.buffer(-abs(unbuffer_m))     # negative buffer
 
-    # Drop empties produced by the unbuffer step
-    tmp = tmp[tmp.geometry.notnull() & ~tmp.geometry.is_empty].copy()
+    # Remove both missing and empty geometries produced by the unbuffer step. Use .array.isna() to avoid a FutureWarning.
+    valid_geometry = (~tmp.geometry.array.isna() & ~tmp.geometry.is_empty.to_numpy())
+    tmp = tmp.loc[valid_geometry].copy()
+
     # Check if the temporary GeoDataFrame is empty
     if tmp.empty:
         # Nothing to collide with after unbuffer → keep everything

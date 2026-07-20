@@ -8,7 +8,7 @@
 -- Information --
 Author: Jacob Stid & Aster Ellsworth
 Date Created: 09-11-2025
-Date Updated: 09-29-2025
+Date Updated: 07-09-2026
 Contact: stidjaco@msu.edu (Jacob Stid)
 
 
@@ -38,13 +38,13 @@ Asset definitions are:
 //###################\\
 
 // Call in solar database to digitize
-var toDigitizeID = 'projects/ee-stidjaco/assets/BigPanel/points_toDigitize';
+var toDigitizeID = 'projects/ee-stidjaco/assets/BigPanel/v1_0/points_toDigitize';
 
 // Call existing array shapes to see if buffer distance just did not catch existing shape
-var existingArraysID = 'projects/ee-stidjaco/assets/BigPanel/existingDatasetArrayShapes'; 
+var existingArraysID = 'projects/ee-stidjaco/assets/BigPanel/v1_0/existingDatasetArrayShapes'; 
 
 // Call all existing points (to check after digitization process for removal of new array bounds)
-var allPointsID = 'projects/ee-stidjaco/assets/BigPanel/points_all';
+var allPointsID = 'projects/ee-stidjaco/assets/BigPanel/v1_0/points_all';
 
 // Call all digitized and georeferenced arrays from prior script iterations
 var newDigGeoRef_v2_asset0 = 'projects/ee-asterellsworth/assets/newDigGeoRef_v2_asset_0';
@@ -61,13 +61,13 @@ var dupPolys_v2_asset2 = 'projects/ee-asterellsworth/assets/duplicatePolys_v2_as
 var States = ee.FeatureCollection("TIGER/2018/States"); 
 
 // Set date
-var date = '093025';
+var date = '070926';
 
 // Set GM-SEUS version
-var version = 'v1_1'
+var version = 'v2_1'
 
 // Set asset folder for final export
-var assetFolder = 'BigPanel/digGeoref_v1_1'
+// var assetFolder = 'BigPanel/digGeoref_v1_1'
 
 // Always set a seed
 var seed = 15;
@@ -83,7 +83,7 @@ var gridCellIDtag = 'STUSPS';
 // Required attributes to check existing sources for
 var attList = [
   {name: 'AVtype',   type: 'String'},
-  //{name: 'Source',   type: 'String'},
+  {name: 'Source',   type: 'String'},
   {name: 'area',     type: 'Float'},
   {name: 'azimuth',  type: 'Float'},
   {name: 'cap_mw',   type: 'Float'},
@@ -216,7 +216,12 @@ var createUnionFC = function(fc){
 
 // Get featureCollections 
 var arraysToDigitize = ee.FeatureCollection(toDigitizeID); // Call the digitizing dataset
-var existingArrays = ee.FeatureCollection(existingArraysID); // Call the existing dataset
+var existingArrays = ee.FeatureCollection(existingArraysID).map(function(f){
+  return f.set('Source', ee.String(ee.Algorithms.If(
+    ee.String(f.get('Source')).compareTo('SAM').eq(0), // exact match on 'SAM'
+    'TZSAM', 
+    f.get('Source'))));
+}); // Call the existing dataset and rename SAM source to TZSAM (v1.0 issue only)
 
 // Get digitized and georeferenced arrays from previous script iterations
 var digGeoref_0 = ee.FeatureCollection(newDigGeoRef_v2_asset0);
@@ -697,8 +702,9 @@ metadata before copying.
 // Merge and Copy toDigitize Attributes to New and Existing Geoms \\ ~~~~~~~~~~~~~~~~~~~~ By state
 //################################################################\\
 
-
-
+// Metadata-only attribute list -- Source is handled explicitly per provenance case below
+var attListMeta = attList.filter(function(d){ return d.name !== 'Source'; });
+var sourceOnly = [{name: 'Source', type: 'String'}];
 
 // Function to separate process by grid cell (in this case, state). Have to create union first to address georeferencing with overlapping states
 var exportDigGeorefByState = function(gridCellID){
@@ -731,52 +737,70 @@ var exportDigGeorefByState = function(gridCellID){
   var georef = digGeorefType.filter(ee.Filter.eq("gtype", "LineString")); 
   var dig = digGeorefType.filter(ee.Filter.eq("gtype", "Polygon")); 
   
-  // Get existingArrays that do and do not intersect with digitized polygons (dig)
-  var digExistingArrays = existingArrays.filter(ee.Filter.intersects('.geo', dig.geometry(geomErrorMargin))); // existing arrays to remove
-  var nonDigExistingArrays = existingArrays.filter(ee.Filter.intersects('.geo', dig.geometry(geomErrorMargin)).not()).filter(ee.Filter.intersects('.geo', georef.geometry(geomErrorMargin))); // existing arrays to keep
+  // Get single existingArrays and dig geometries for repeated intersection filters (compute once)
+  var existingArraysGeom = existingArrays.geometry(geomErrorMargin);
+  var digGeom = dig.geometry(geomErrorMargin);
   
-  // ~~~~~~~~~~~~~~~~~~~ Copy metadata from merged points to newly digitized array boundaries
+  // Get existingArrays that do and do not intersect with digitized polygons (dig)
+  var digExistingArrays = existingArrays.filter(ee.Filter.intersects('.geo', digGeom)); // existing arrays replaced/extended by digitization (Source donors for Case 2)
+  var nonDigExistingArrays = existingArrays.filter(ee.Filter.intersects('.geo', digGeom).not()).filter(ee.Filter.intersects('.geo', georef.geometry(geomErrorMargin))); // existing arrays to keep as-is (Case 1)
+  
+  // ~~~~~~~~~~~~~~~~~~~ Copy metadata (NOT Source) from merged points to newly digitized array boundaries
   
   // Buffer and create a union of digitized and georeferenced objects. Then, split the unioned geometry back into individual geometries and map over each geometry to convert it into a feature
   var digGeorefUnion = createUnionFC(digGeorefType);
   
-  // Copy metadata from points to the digGeorefUnion based on intersecting objects. Set Source as 'GMSEUSdigGeoref_version'. Then copy metadata to original dig
-  var digGeorefWithAttributesBuffered = copyAttributes(arraysToDigitizeMerged, digGeorefUnion, attList);
-  var digGeorefWithAttributes = copyAttributes(digGeorefWithAttributesBuffered, dig, attList).map(function(f){return f.set({Source: ee.String('GMSEUSdig_').cat(version)})});
+  // Copy metadata from points to the digGeorefUnion based on intersecting objects, then down to original dig. Source is intentionally excluded so provenance reflects spatial origin, not metadata origin
+  var digGeorefWithAttributesBuffered = copyAttributes(arraysToDigitizeMerged, digGeorefUnion, attListMeta);
+  var digWithMeta = copyAttributes(digGeorefWithAttributesBuffered, dig, attListMeta);
   
-  // ~~~~~~~~~~~~~~~~~~~ Copy metadata from merged points to kept existing array boundaries
+  // ~~~~~~~~~~~~~~~~~~~ Split dig polygons by spatial provenance (Case 2: replaces existing geometry, Case 3: entirely new geometry)
+  
+  // Case 2 candidates intersect an existing source geometry, Case 3 candidates do not
+  var digWithExisting = digWithMeta.filter(ee.Filter.intersects('.geo', existingArraysGeom)); 
+  var digNew = digWithMeta.filter(ee.Filter.intersects('.geo', existingArraysGeom).not()); 
+  
+  // ~~~~~~~~~~~~~~~~~~~ Case 2: Original source geometry retained but extended/redigitized with new geometry and metadata -- Source = original+"_digMetaGeoref_"+version
+  
+  // Clear any Source picked up along the way, then fill Source from the intersecting existing (spatial) source, and backfill any remaining missing metadata from same
+  var digCase2 = digWithExisting.map(function(f){ return f.set('Source', ''); });
+  var digCase2 = copyAttributes(digExistingArrays, digCase2, sourceOnly);
+  var digCase2 = copyAttributes(digExistingArrays, digCase2, attListMeta);
+  var digCase2 = digCase2.map(function(f){return f.set({Source: ee.String(f.get('Source')).cat(ee.String('_digMetaGeoref_')).cat(version)})});
+  
+  // ~~~~~~~~~~~~~~~~~~~ Case 3: No original source geometry, gained new geometry and metadata -- Source = "digMeta_"+version
+  
+  // Set Source directly (no original spatial source exists to inherit from)
+  var digCase3 = digNew.map(function(f){return f.set({Source: ee.String('digMeta_').cat(version)})});
+  
+  // ~~~~~~~~~~~~~~~~~~~ Case 1: Original source geometry retained as-is, gained metadata via line-connector -- Source = original+"_metaGeoref_"+version
   
   // Merge existingArrays with georeferenced line-connectors. Then, buffer and create a union of digitized and georeferenced objects. Then, split the unioned geometry back into individual geometries and features
   var existingArraysGeoref = digExistingArrays.merge(georef);
   var existingGeorefUnion = createUnionFC(existingArraysGeoref);
   
-  // Copy metadata from digExistingArrays to dig based on intersecting objects. Set Source as 'GMSEUSdigGeoref_version'
-  var existingGeorefWithAttributesBuffered = copyAttributes(arraysToDigitizeMerged, existingGeorefUnion, attList);
-  var existingGeorefWithAttributes = copyAttributes(existingGeorefWithAttributesBuffered, nonDigExistingArrays, attList).map(function(f){return f.set({Source: ee.String('GMSEUSgeoref_').cat(version)})});
-  
-  // ~~~~~~~~~~~~~~~~~~~ Copy metadata from removed existing array boundaries to newly digitized array boundaries with attributes
-  
-  // Copy metadata from digExistingArrays to digGeorefWithAttributes based on intersecting objects. 
-  var digGeorefWithAttributesAll = copyAttributes(digExistingArrays, digGeorefWithAttributes, attList);
+  // Copy metadata (NOT Source) from points through the union to kept existing arrays. Source already exists on these features from the original spatial source, so only the suffix is appended
+  var existingGeorefWithAttributesBuffered = copyAttributes(arraysToDigitizeMerged, existingGeorefUnion, attListMeta);
+  var case1 = copyAttributes(existingGeorefWithAttributesBuffered, nonDigExistingArrays, attListMeta).map(function(f){return f.set({Source: ee.String(f.get('Source')).cat(ee.String('_metaGeoref_')).cat(version)})});
   
   // ~~~~~~~~~~~~~~~~~~~ Compile into a single featureCollection, validate geometries, and export
   
-  // Merge newly digitized and georeferenced boundaries 
-  var mergedBoundariesWithAttributes = existingGeorefWithAttributes.merge(digGeorefWithAttributesAll); // Map.addLayer(mergedBoundariesWithAttributes)
+  // Merge all three provenance cases
+  var mergedBoundariesWithAttributes = case1.merge(digCase2).merge(digCase3); // Map.addLayer(mergedBoundariesWithAttributes)
   
   // Recalculate area and save as integer
   var mergedBoundariesWithAttributes_OUT = mergedBoundariesWithAttributes.map(function(f){return f.set({area: f.geometry(geomErrorMargin).area(geomErrorMargin).toInt()})})
   
-  // Build out selectors
-  var attNames  = attList.map(function(d){ return d.name; }); // ["AVtype","area",...]
+  // Build out selectors -- attListMeta excludes Source, which is prepended explicitly
+  var attNames  = attListMeta.map(function(d){ return d.name; });
   var outSelectors = ['Source', '.geo'].concat(attNames);
   
   // Merge newPanelRows from current script with previous version digitizations (digGeoref)
-  Export.table.toAsset({
-    collection: mergedBoundariesWithAttributes_OUT, 
-    description: "assetExportFinalArraySHP_"+gridCellID, 
-    assetId: assetFolder+"/GMSEUS"+version+"_digGeorefArrays_"+gridCellID, 
-    maxVertices: 1e9});
+  // Export.table.toAsset({
+  //   collection: mergedBoundariesWithAttributes_OUT, 
+  //   description: "assetExportFinalArraySHP_"+gridCellID, 
+  //   assetId: assetFolder+"/GMSEUS"+version+"_digGeorefArrays_"+gridCellID, 
+  //   maxVertices: 1e9});
   Export.table.toDrive({
     collection: mergedBoundariesWithAttributes_OUT,
     description:'GMSEUS'+version+'_digGeorefArrays_'+gridCellID,
