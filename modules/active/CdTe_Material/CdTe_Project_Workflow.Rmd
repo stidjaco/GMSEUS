@@ -21,7 +21,7 @@ library(ggrepel)
 options(tigris_use_cache = TRUE)
 
 #     Loading data 
-array_file <- "C:/Users/miada/Downloads/Energy_Lab/GMSEUS_Arrays_Final_2.0.csv"
+array_file <- "C:/Users/miada/Downloads/Energy_Lab/GMSEUS_Arrays_Final_2.1.csv" ## new data set 07/20
 panel_file <- "C:/Users/miada/Downloads/Energy_Lab/GMSEUS_Panels_Final_2.0.csv"
 
 array_df <- read_csv(array_file) %>%
@@ -153,6 +153,7 @@ ggplot(modType_summary, aes(x = modType, y = avgCapMW, fill = modType)) +
     panel.grid.minor   = element_blank(),
     axis.text.x        = element_text(size = 11)
   )
+#table(array_df$modType("a-si", "cdte", "cigs", "thin-film", "thin-film-other"))        # unique values + counts of each
 ```
 
 
@@ -163,7 +164,7 @@ array_based_sf <- array_based_df %>%
   filter(is.finite(longitude), is.finite(latitude)) %>%
   mutate(mod_label = case_when(
     modType == "c-si"      ~ "Crystalline Silicon",
-    modType == "thin-film" ~ "Thin Film",
+    modType == "cdte" ~ "Thin Film (CdTe)",
     modType == "csp"       ~ "Concentrated Solar Power (CSP)"
   )) %>%
   st_as_sf(coords = c("longitude", "latitude"), crs = 4326) %>%
@@ -173,13 +174,13 @@ ggplot() +
   geom_sf(data = states_p, fill = "grey95", color = "black", linewidth = 0.15) +
   geom_sf(data = us_p,     fill = NA,       color = "black", linewidth = 0.40) +
   # Plot non-thin-film arrays first so thin-film renders on top and is not obscured as we want it to be highlighted here
-  geom_sf(data = array_based_sf %>% filter(modType != "thin-film"),
+  geom_sf(data = array_based_sf %>% filter(modType != "cdte"),
           aes(color = mod_label), size = 1.5, alpha = 0.6) +
-  geom_sf(data = array_based_sf %>% filter(modType == "thin-film"),
+  geom_sf(data = array_based_sf %>% filter(modType == "cdte"),
           aes(color = mod_label), size = 1.5, alpha = 0.8) +
   scale_color_manual(
     values = c("Crystalline Silicon"          = "#96CDCD",
-               "Thin Film"                    = "navy",
+               "Thin Film (CdTe)"                    = "navy",
                "Concentrated Solar Power (CSP)" = "dodgerblue"),
     name = "Module Type"
   ) +
@@ -192,7 +193,7 @@ ggplot() +
   ) +
   labs(
     title    = "Solar Arrays by Module Type",
-    subtitle = "Crystalline silicon, thin-film, and CSP installations across the contiguous US"
+    subtitle = "Crystalline silicon, thin-film (CdTe), and CSP installations across the contiguous US"
   )
 ```
 
@@ -231,7 +232,7 @@ assign_boundary <- function(y) {
 # Filter to thin-film arrays only and append with derived columns
  
 thin_film_df <- array_based_df %>%
-  filter(modType == "thin-film") %>%
+  filter(modType == "cdte") %>%
   mutate(
     capMW_total      = coalesce(capMW, capMWest),  # uses reported capacity, falling back to estimated if missing
     STATEFP          = str_pad(as.character(STATEFP), 2, pad = "0"), # zero-padded to 2 digits for consistent joining with Census geometries- based on recommendation 
@@ -310,6 +311,7 @@ leaflet(thin_film_df,
     }
   ")
 ```
+
 ```{r Ggplot-static: map thin-film series}
 # Convert thin-film arrays to sf and reproject to Albers Equal Area (EPSG:5070)
 thin_film_sf <- thin_film_df %>%
@@ -318,28 +320,308 @@ thin_film_sf <- thin_film_df %>%
   st_transform("EPSG:5070")
 
 # Static map of thin-film arrays colored by predicted First Solar series
-ggplot() +
+p_series_map <- ggplot() +
   geom_sf(data = states_p, fill = "grey95", color = "black", linewidth = 0.15) +
   geom_sf(data = us_p,     fill = NA,       color = "black", linewidth = 0.40) +
   geom_sf(data = thin_film_sf,
-          aes(color = predicted_series), size = 1.9, alpha = 0.9) +
+          aes(color = predicted_series), size = 2.5, alpha = 0.9) +
   scale_color_manual(
-    values = series_colors,  # shared palette defined above for cross-map consistency
-    name   = "Thin-Film Series",
-    drop   = FALSE           # keep all series levels in legend even if absent in data
+    values = series_colors,
+    name   = "Series\nNumber",
+    drop   = FALSE
   ) +
   coord_sf(crs = "EPSG:5070", expand = FALSE) +
+  guides(
+    color = guide_legend(override.aes = list(size = 3))
+  ) +
   theme_void() +
   theme(
     plot.title      = element_text(face = "bold", size = 13),
-    plot.subtitle   = element_text(size = 10, color = "grey40"),
-    legend.position = "bottom"
-  ) +
-  labs(
-    title    = "Thin-Film Solar Arrays by Predicted First Solar Series",
-    subtitle = "Series assigned from installation year of installation"
+    plot.subtitle    = element_text(size = 10, color = "grey40"),
+    legend.position  = c(0.95, 0.60),   # right side, vertically around Maine
+    legend.justification = c(0.5, 1),
+    legend.background = element_rect(fill = "white", color = NA),
+    legend.key.size  = unit(0.4, "cm"),
+    legend.text      = element_text(size = 8),
+    legend.title     = element_text(size = 9, face = "bold", hjust = 0.5),
+    plot.background   = element_rect(fill = "white", color = NA),
+    ) 
+
+p_series_map
+
+ggsave(
+  filename = "C:/Users/miada/Downloads/Energy_Lab/Thin-FilmSolarArraysbyPredictedFirstSolarSeries.png",
+  plot     = p_series_map,
+  width    = 8,
+  height   = 5,
+  dpi      = 300
+)
+```
+```{r Timeline of all First Solar series installations}
+#this will go on top of the figure above, we'll just overlay it. 
+
+all_series_years <- tibble(
+  predicted_series = c("Series 2", "Series 3", "Series 4", "Series 6", "Series 7"),
+  start_year       = c(2006, 2013, 2016, 2018, 2023),
+  end_year         = c(2012, 2015, 2019, 2022, 2025)
+)
+
+overlap_window <- tibble(start = 2018, end = 2019)  # overlap of Series 4 (ends 2019) and Series 6 (starts 2018)
+
+# Matches existing series_colors palette (used in the Leaflet map, lines 268-274)
+timeline_colors <- c(
+  "Series 2" = "lightgreen",
+  "Series 3" = "#5AAE61",
+  "Series 4" = "dodgerblue",
+  "Series 6" = "orchid",
+  "Series 7" = "#4B0082"
+)
+
+p_timeline_all <- ggplot(all_series_years) +
+  geom_rect(data = overlap_window,
+            aes(xmin = start, xmax = end, ymin = 0.4, ymax = 5.6),
+            fill = "grey80", color = "black", linewidth = 0.8,
+            inherit.aes = FALSE) +
+  geom_segment(aes(x = start_year, xend = end_year,
+                    y = predicted_series, yend = predicted_series,
+                    color = predicted_series),
+               linewidth = 14, lineend = "round") +
+  geom_text(aes(x = (start_year + end_year) / 2, y = predicted_series,
+                label = paste0(start_year, "\u2013", end_year)),
+            color = "white", fontface = "bold", size = 5) +
+  annotate("text", x = 2018.5, y = 5.6,
+           label = "S4/S6 overlap\n(2018\u20132019)",
+           vjust = -0.3, size = 4.5, fontface = "italic", color = "grey20") +
+  scale_color_manual(values = timeline_colors, guide = "none") +
+  scale_x_continuous(breaks = seq(2006, 2025, by = 2)) +
+  scale_y_discrete(limits = c("Series 2", "Series 3", "Series 4", "Series 6", "Series 7")) +
+  labs(x = "Installation Year", y = NULL) +      # title = "Timeline of First Solar Series Installations"
+  theme_minimal(base_size = 18) +
+  theme(panel.grid.minor  = element_blank(),
+        axis.text.y       = element_text(face = "bold", size = 16),
+        axis.text.x       = element_text(size = 13),
+        axis.title.x      = element_text(size = 15),
+        plot.title        = element_text(size = 20, face = "bold"))
+
+p_timeline_all
+
+ggsave(
+  filename = "C:/Users/miada/Downloads/Energy_Lab/series_installation_timeline.png",
+  plot     = p_timeline_all,
+  width    = 14,
+  height   = 4,
+  dpi      = 300,
+  bg       = "white"
+)
+```
+
+```{r}
+kmeans_features_panel <- c("instYr", "latitude", "longitude", "avgWidth", "avgSpace", "GCR1")
+
+# Training set: confident Series 4 (2017) and Series 6 (2021),
+# restricted to arrays that actually have avgWidth/avgSpace data
+train_df_panel <- thin_film_df %>%
+  filter(
+    (instYr == 2017, instYr == 2016 & predicted_series == "Series 4") |
+    (instYr == 2021, instYr == 2022 & predicted_series == "Series 6")
+  ) %>%
+  select(arrayID, predicted_series, all_of(kmeans_features_panel)) %>%
+  drop_na(all_of(kmeans_features_panel))
+
+table(train_df_panel$predicted_series)
+
+# Scale and fit
+train_scaled_panel <- train_df_panel %>%
+  select(all_of(kmeans_features_panel)) %>%
+  scale()
+
+set.seed(42)
+km_fit_panel <- kmeans(train_scaled_panel, centers = 2, nstart = 25)
+
+train_df_panel$cluster <- factor(km_fit_panel$cluster)
+
+table(Actual = train_df_panel$predicted_series, Cluster = train_df_panel$cluster)
+```
+```{r}
+kmeans_features_panel <- c( "latitude", "longitude", "avgWidth", "avgSpace", "GCR1")
+
+# Training set: confident Series 4 (2017) and Series 6 (2021), full sample
+train_df_imputed <- thin_film_df %>%
+  filter(
+    (instYr == 2017 & predicted_series == "Series 4") |
+    (instYr == 2021 & predicted_series == "Series 6")
+  ) %>%
+  select(arrayID, predicted_series, all_of(kmeans_features_panel))
+
+# Check how many are missing before imputing, for transparency
+train_df_imputed %>%
+  group_by(predicted_series) %>%
+  summarise(
+    missing_avgWidth = sum(is.na(avgWidth)),
+    missing_avgSpace = sum(is.na(avgSpace)),
+    n = n()
+  )
+
+# Impute avgWidth/avgSpace using each series' own median
+# (keeps Series 4 and Series 6 distributions distinct rather than blending them)
+train_df_imputed <- train_df_imputed %>%
+  group_by(predicted_series) %>%
+  mutate(
+    avgWidth = ifelse(is.na(avgWidth), median(avgWidth, na.rm = TRUE), avgWidth),
+    avgSpace = ifelse(is.na(avgSpace), median(avgSpace, na.rm = TRUE), avgSpace)
+  ) %>%
+  ungroup() %>%
+  drop_na(all_of(kmeans_features_panel))  # safety net in case a whole series is missing
+
+table(train_df_imputed$predicted_series)
+
+# Scale and fit
+train_scaled_imputed <- train_df_imputed %>%
+  select(all_of(kmeans_features_panel)) %>%
+  scale()
+
+set.seed(42)
+km_fit_imputed <- kmeans(train_scaled_imputed, centers = 2, nstart = 25)
+
+train_df_imputed$cluster <- factor(km_fit_imputed$cluster)
+
+table(Actual = train_df_imputed$predicted_series, Cluster = train_df_imputed$cluster)
+```
+
+```{r}
+# Does effInit vary within a single predicted_series across different years?
+# If it's a real per-array measurement, we'd expect some spread.
+# If it's a lookup constant by series, every year within that series will be identical.
+
+thin_film_df %>%
+  filter(modType == "cdte", instYr >= 2016, instYr <= 2021) %>%
+  group_by(instYr) %>%
+  summarise(
+    mean_eff = mean(effInit, na.rm = TRUE),
+    sd_eff   = sd(effInit, na.rm = TRUE),
+    n        = n(),
+    .groups  = "drop"
+  ) %>%
+  arrange(instYr)
+thin_film_df %>%
+  filter(instYr >= 2016, instYr <= 2022) %>%
+  group_by(instYr) %>%
+  summarise(
+    total_arrays         = n(),
+    missing_avgWidth     = sum(is.na(avgWidth)),
+    missing_avgSpace     = sum(is.na(avgSpace)),
+    missing_either       = sum(is.na(avgWidth) | is.na(avgSpace)),
+    pct_missing_either   = round(100 * missing_either / total_arrays, 1),
+    .groups = "drop"
+  ) %>%
+  arrange(instYr)
+```
+```{r}
+thin_film_df %>%
+  filter(instYr >= 2016, instYr <= 2022) %>%
+  summarise(
+    total_arrays       = n(),
+    missing_avgWidth   = sum(is.na(avgWidth)),
+    missing_avgSpace   = sum(is.na(avgSpace)),
+    missing_either     = sum(is.na(avgWidth) | is.na(avgSpace)),
+    pct_missing_either = round(100 * missing_either / total_arrays, 1)
   )
 ```
+
+
+```{r}
+thin_film_df %>%
+  filter(
+    (instYr == 2017 & predicted_series == "Series 4") |
+    (instYr == 2021 & predicted_series == "Series 6")
+  ) %>%
+  summarise(
+    missing_avgWidth    = sum(is.na(avgWidth)),
+    missing_avgRowWidth = sum(is.na(avgRowWidth)),
+    missing_avgSpace    = sum(is.na(avgSpace)),
+    missing_avgRowSpace = sum(is.na(avgRowSpace))
+  )
+```
+
+
+```{r}
+# --- Deploy trained clusters onto the boundary years (2018, 2019, 2020) ---
+boundary_df <- thin_film_df %>%
+  filter(boundary_case == "S4-S6") %>%
+  select(arrayID, instYr, predicted_series, boundary_case, all_of(kmeans_features)) %>%
+  drop_na(all_of(kmeans_features))
+
+# Apply the SAME scaling (mean/sd from training data, not refit on boundary data,
+# so boundary points land in the same coordinate space as the trained centers)
+center_means <- attr(scale(train_df %>% select(all_of(kmeans_features))), "scaled:center")
+center_sds   <- attr(scale(train_df %>% select(all_of(kmeans_features))), "scaled:scale")
+
+boundary_scaled <- boundary_df %>%
+  mutate(across(all_of(kmeans_features),
+                ~(. - center_means[cur_column()]) / center_sds[cur_column()]))
+
+# kmeans() has no native predict() method, so assign each boundary point
+# to whichever of the 2 trained centers it's closest to (Euclidean distance)
+assign_cluster <- function(x, centers) {
+  d <- sapply(1:nrow(centers), function(i) sum((x - centers[i, ])^2))
+  which.min(d)
+}
+
+boundary_scaled$cluster <- apply(
+  boundary_scaled %>% select(all_of(kmeans_features)), 1,
+  assign_cluster, centers = km_fit$centers
+)
+boundary_scaled$cluster <- factor(boundary_scaled$cluster)
+
+boundary_df <- boundary_df %>%
+  bind_cols(cluster = boundary_scaled$cluster) %>%
+  left_join(cluster_to_series, by = "cluster") %>%
+  rename(kmeans_predicted_series = cluster_series)
+
+# Compare original year-based guess vs. k-means-refined guess for boundary arrays
+boundary_df %>%
+  count(instYr, predicted_series, kmeans_predicted_series) %>%
+  arrange(instYr)
+```
+```{r}
+# Join state_name back onto train_df (it was dropped in the select() step)
+train_df_states <- train_df %>%
+  left_join(
+    thin_film_df %>% select(arrayID, state_name),
+    by = "arrayID"
+  )
+
+# Focus on Cluster 2, where Series 4 and Series 6 overlap
+cluster2_breakdown <- train_df_states %>%
+  filter(cluster == 2) %>%
+  count(predicted_series, state_name) %>%
+  arrange(desc(n))
+
+print(cluster2_breakdown, n = 50)
+
+# Side-by-side: which states show up for S4-in-cluster2 vs S6-in-cluster2
+cat("\n=== States for Series 4 arrays landing in Cluster 2 ===\n")
+train_df_states %>%
+  filter(cluster == 2, predicted_series == "Series 4") %>%
+  count(state_name, sort = TRUE) %>%
+  print(n = 20)
+
+cat("\n=== States for Series 6 arrays landing in Cluster 2 ===\n")
+train_df_states %>%
+  filter(cluster == 2, predicted_series == "Series 6") %>%
+  count(state_name, sort = TRUE) %>%
+  print(n = 20)
+
+# Overlap: states where BOTH series show up in cluster 2 (the truly ambiguous ones)
+overlap_states <- intersect(
+  train_df_states %>% filter(cluster == 2, predicted_series == "Series 4") %>% pull(state_name),
+  train_df_states %>% filter(cluster == 2, predicted_series == "Series 6") %>% pull(state_name)
+)
+cat("\n=== States where Series 4 AND Series 6 both land in Cluster 2 ===\n")
+print(overlap_states)
+```
+
+
 
 
 
@@ -394,45 +676,26 @@ table(thin_film_df$modules_source)
 head(thin_film_df$num_modules)
 nrow(thin_film_df)
 ```
-
-
-## 8. Series Distribution Summary
-
-```{r series-distribution overview}
-series_distribution <- thin_film_df %>%
-  group_by(predicted_series) %>%
-  summarise(
-    num_arrays    = n(),
-    total_modules = sum(num_modules, na.rm = TRUE),
-    .groups = "drop"
-  ) %>%
-  mutate(
-    percent_arrays  = round(100 * num_arrays   / sum(num_arrays),   1),
-    percent_modules = round(100 * total_modules / sum(total_modules), 1)
-  ) %>%
-  arrange(desc(total_modules))
-
-series_distribution
-```
-
-
-## 9. Material Estimation per Array
+## 8. Material Estimation per Array
 
 ```{r material-estimation}
+thin_film_df <- thin_film_df %>%
+  select(-any_of(c("CdTe_g","Aluminum_kg","Steel_kg","EVA_kg","Copper_g",
+                    "GlassMass_kg","Other_kg","TotalWeight_kg","CalcTotalMass_kg")))
 # Material composition per module by series
 # Source: First Solar product datasheets
 # CdTe and Copper in grams/module; all others in kg/module
 material_per_module <- tibble(
   predicted_series = c("Series 2", "Series 3", "Series 4", "Series 6", "Series 7"),
   CdTe_g           = c(13,    13,    11,    36,    41   ),
-  Aluminum_kg      = c(0,     0,     0,     4.2,   0    ),
-  Steel_kg         = c(0,     0,     0,     0,     6.97 ),
+  Aluminum_kg      = c(0,     0,     0,     3.93,  0    ),  # was 4.2
+  Steel_kg         = c(0,     0,     0,     0,     6.5  ),  # was 6.97
   EVA_kg           = c(0.28,  0.28,  0.28,  0.97,  1.11 ),
   Copper_g         = c(43.7,  27.3,  27.3,  16.1,  14.6 ),
   GlassMass_kg      = c(11.52, 11.52, 11.52, 30.875, 35.00),
   Other_kg         = c(0.3,   0.3,   0.3,   0.3,   0.3  ),
   TotalWeight_kg   = c(12,    12,    12,    34.5,  39.7 ),
-  CalcTotalMass_kg  = c(12.1567, 12.1403, 12.1383, 36.3971, 43.4356)
+  CalcTotalMass_kg  = c(12.1567, 12.1403, 12.1383, 36.1271, 42.9656)  # was 36.3971, 43.4356
 )
 
 thin_film_df <- thin_film_df %>%
@@ -450,6 +713,31 @@ thin_film_df <- thin_film_df %>%
     total_CdTe_metton     = total_CdTe_g   / 1e6,  # g → metric tons
     total_Copper_metton   = total_Copper_g / 1e6   # g → metric tons
   )
+```
+
+## 9. Series Distribution Summary
+
+```{r series-distribution overview}
+# NOTE: material columns (total_GlassMass_kg, total_CalcMass_kg) are joined in
+# Section 9 (material-estimation). Run that chunk first if executing out of order.
+series_distribution <- thin_film_df %>%
+  group_by(predicted_series) %>%
+  summarise(
+    num_arrays        = n(),
+    total_modules     = sum(num_modules,         na.rm = TRUE),
+    total_Glass_t     = sum(total_GlassMass_kg,  na.rm = TRUE) / 1e3,
+    total_CalcMass_t  = sum(total_CalcMass_kg,   na.rm = TRUE) / 1e3,
+    .groups = "drop"
+  ) %>%
+  mutate(
+    percent_arrays    = round(100 * num_arrays       / sum(num_arrays),       1),
+    percent_modules   = round(100 * total_modules    / sum(total_modules),    1),
+    pct_Glass         = round(100 * total_Glass_t    / sum(total_Glass_t),    1),
+    pct_CalcMass      = round(100 * total_CalcMass_t / sum(total_CalcMass_t), 1)
+  ) %>%
+  arrange(desc(total_modules))
+
+series_distribution
 ```
 
 
@@ -835,72 +1123,78 @@ ggplot() +
 
 ## 5b. Bubble Map — Installation Year and Capacity (Static)
 ```{r bubble-map-year-capacity CONTINUOUS}
-
-# Summarise annual installation counts for the inset bar chart
 year_counts <- thin_film_df %>%
   filter(is.finite(instYr)) %>%
   group_by(instYr) %>%
   summarise(n = n(), .groups = "drop")
 
-# Build inset bar chart — colors match the magma palette used in the bubble map
 inset_bar <- ggplot(year_counts, aes(x = instYr, y = n, fill = instYr)) +
-  geom_col(width = 0.8) +
-  scale_fill_viridis_c(option = "magma", guide = "none") +  # same palette as bubble map, no legend
+  geom_col(width = 0.8, color = "black", linewidth = 0.3) +   # black outline on each bar
+  scale_fill_viridis_c(option = "magma", guide = "none") +
   scale_x_continuous(breaks = seq(min(year_counts$instYr), max(year_counts$instYr), by = 2)) +
-  labs(x = NULL, y = "Arrays") +
-  theme_minimal(base_size = 7) +
+  labs(x = NULL, y = "Installed Arrays") +
+  theme_minimal(base_size = 9) +
   theme(
     panel.grid.minor   = element_blank(),
     panel.grid.major.x = element_blank(),
-    plot.background    = element_rect(fill = "white", color = "grey70", linewidth = 0.3),
-    axis.text.x        = element_text(angle = 45, hjust = 1, size = 6),
-    axis.text.y        = element_text(size = 6)
+    plot.background    = element_rect(fill = "white", color = NA),  # border removed (was "grey70")
+    axis.text.x        = element_text(angle = 45, hjust = 1, size = 9),
+    axis.text.y        = element_text(size = 9)
   )
 
-# Convert thin-film arrays to sf and reproject to Albers Equal Area (EPSG:5070)
 thin_film_sf <- thin_film_df %>%
   filter(is.finite(longitude), is.finite(latitude),
          is.finite(instYr),    is.finite(capMW_total)) %>%
   st_as_sf(coords = c("longitude", "latitude"), crs = 4326) %>%
   st_transform("EPSG:5070")
 
-# Get the projected coordinate extent of the US for inset positioning
-us_bbox <- st_bbox(us_p)
-
-# Place inset in bottom-left — below California, above the southern border
-# Adjust xmin/xmax/ymin/ymax if the inset needs to shift
-inset_x_min <- us_bbox["xmin"]
-inset_x_max <- us_bbox["xmin"] + (us_bbox["xmax"] - us_bbox["xmin"]) * 0.28
+us_bbox     <- st_bbox(us_p)
+inset_x_min <- us_bbox["xmin"] - (us_bbox["xmax"] - us_bbox["xmin"]) * 0.03  # negative pushes left of map edge
+inset_x_max <- us_bbox["xmin"] + (us_bbox["xmax"] - us_bbox["xmin"]) * 0.29  # keep same width
 inset_y_min <- us_bbox["ymin"]
 inset_y_max <- us_bbox["ymin"] + (us_bbox["ymax"] - us_bbox["ymin"]) * 0.22
 
 ggplot() +
   geom_sf(data = states_p, fill = "grey80", color = "black", linewidth = 0.15) +
   geom_sf(data = us_p,     fill = NA,       color = "black", linewidth = 0.40) +
-  # Bubble size = capacity, color = installation year — both encoded for emphasis
   geom_sf(data = thin_film_sf,
           aes(size = capMW_total, color = instYr),
-          alpha = 0.5) +
-  # Inset bar chart positioned in bottom-left corner of the projected coordinate space
+          alpha  = 0.5,
+        stroke = 0) +
   annotation_custom(
     grob = ggplotGrob(inset_bar),
     xmin = inset_x_min, xmax = inset_x_max,
     ymin = inset_y_min, ymax = inset_y_max
   ) +
-  scale_size_continuous(range = c(1, 20), name = "Capacity (MW)") +
-  scale_color_viridis_c(option = "magma", name = "Installation Year") +
+  scale_size_continuous(
+    range  = c(1, 20),
+    name   = "Capacity (MW)",
+    breaks = c(1, 10, 50, 100, 400, 600),
+    labels = function(x) paste0(round(x, 0))
+  ) +
+  scale_color_viridis_c(option = "magma", name = "Installation
+Year") +
   coord_sf(crs = "EPSG:5070", expand = FALSE) +
   theme_void() +
   theme(
     plot.title      = element_text(face = "bold", size = 13),
     plot.subtitle   = element_text(size = 10, color = "grey40"),
-    legend.position = "right"
-  ) +
-  labs(
-    title    = "Thin-Film Solar Arrays by Installation Year and Capacity",
-    subtitle = "Bubble size = capacity (MW), color = installation year; inset = annual installation count"
+    legend.position = c(0.96, 0.33),  # x=0.92 nudges left from right edge, y=0.5 centers vertically
+    legend.text     = element_text(size = 11),
+    legend.title    = element_text(size = 12, face = "bold"),
+    plot.margin     = margin(t = 5, r = 5, b = 5, l = 40)
   )
+  
+
+ggsave(
+  filename = "C:/Users/miada/Downloads/Energy_Lab/bubble_map_year_capacity.png",
+  width    = 14,
+  height   = 8,
+  dpi      = 400,
+  bg       = "white"
+)
 ```
+
 ```{r bubble-map-year-capacity BINNED}
 
 # Summarise annual installation counts for the inset bar chart
@@ -1251,8 +1545,8 @@ plot_cog <- function(weight_col = NULL, title_label, xlim = NULL, ylim = NULL) {
     scale_color_viridis_c(
   option = "plasma",
   name   = "Year",
-  limits = c(2006, 2024),
-  breaks = seq(2006, 2024, by = 2)
+  limits = c(2006, max(thin_film_df$instYr, na.rm = TRUE)),
+  breaks = seq(2006, max(thin_film_df$instYr, na.rm = TRUE), by = 2)
 ) +
     coord_sf(
   crs    = "EPSG:5070",
@@ -1285,6 +1579,10 @@ plot_cog("total_Array_Weight_kg", "Total Array Mass")
 plot_cog("total_GlassMass_kg", "Glass Mass")
 plot_cog("total_CalcMass_kg",  "Total Calculated Mass")
 ```
+```{r}
+thin_film_df %>% filter(instYr == 2025) %>% nrow()
+```
+
 
 ```{r CoG region bounds and subplots for Manusript}
 library("ggrepel")
@@ -1376,11 +1674,11 @@ p_calcmass <- plot_cog("total_CalcMass_kg", "Total Calculated Mass",
 
 # Individual material subplots we selected, can be changed out 
 p_cdte   <- clean_cog("total_CdTe_g",        "C.                                Cadmium Telluride")
-p_copper <- clean_cog("total_Copper_g",      "D.                                      Copper")
-p_al     <- clean_cog("total_Aluminum_kg",   "E.                                      Aluminum")
+p_copper <- clean_cog("total_Copper_g",      "E.                                      Copper")
+p_al     <- clean_cog("total_Aluminum_kg",   "G.                                      Aluminum")
 p_steel  <- clean_cog("total_Steel_kg",      "F.                                       Steel")
-p_glass  <- clean_cog("total_GlassMass_kg",  "G.                                    Glass Mass")
-p_eva    <- clean_cog("total_EVA_kg",        "H.                                EVA Encapsulant")
+p_glass  <- clean_cog("total_GlassMass_kg",  "D.                                    Glass Mass")
+p_eva    <- clean_cog("total_EVA_kg",        "F.                                EVA Encapsulant")
 
 # Shared legend added here
 shared_legend <- cowplot::get_legend(
@@ -1394,9 +1692,9 @@ shared_legend <- cowplot::get_legend(
 
 # layout of the 8 subplots
 main_plot <- (p_locator | p_calcmass) /
-  (p_cdte    | p_copper) /
-  (p_al      | p_steel)  /
-  (p_glass   | p_eva)    +
+  (p_cdte    | p_glass) /
+  (p_copper      | p_eva)  /
+  (p_al   | p_steel)    +
   plot_layout(
     guides  = "collect",
     widths  = c(1, 1)
@@ -1418,6 +1716,12 @@ ggsave(   # saved locally to import to manuscript
   dpi      = 300
 )
 ```
+```{r}
+thin_film_df <- array_based_df %>%
+  filter(modType == "cdte") %>%
+  ...
+```
+
 
 ```{r Checking Source of MW estimations to determine reliablility in the future analysis}
 thin_film_df %>%
@@ -1512,118 +1816,696 @@ thin_film_df %>%
     total_CdTe_t      = sum(total_CdTe_g,        na.rm = TRUE) / 1e6,
     total_Al_t        = sum(total_Aluminum_kg,   na.rm = TRUE) / 1e3,
     total_Steel_t     = sum(total_Steel_kg,      na.rm = TRUE) / 1e3,
+    total_EVA_t       = sum(total_EVA_kg,        na.rm = TRUE) / 1e3,
     total_Copper_t    = sum(total_Copper_g,      na.rm = TRUE) / 1e6,
     total_Glass_t     = sum(total_GlassMass_kg,  na.rm = TRUE) / 1e3,
     total_CalcMass_t  = sum(total_CalcMass_kg,   na.rm = TRUE) / 1e3,
     .groups = "drop"
   ) %>%
   mutate(
-    pct_modules        = round(100 * total_modules   / sum(total_modules),   1),
-    pct_CdTe           = round(100 * total_CdTe_t    / sum(total_CdTe_t),    1),
-    pct_Al             = round(100 * total_Al_t       / sum(total_Al_t),      1),
-    pct_Steel          = round(100 * total_Steel_t    / sum(total_Steel_t),   1),
-    pct_Glass          = round(100 * total_Glass_t    / sum(total_Glass_t),   1),
-    pct_CalcMass       = round(100 * total_CalcMass_t / sum(total_CalcMass_t),1),
+    pct_modules        = round(100 * total_modules   / sum(total_modules),    1),
+    pct_CdTe           = round(100 * total_CdTe_t    / sum(total_CdTe_t),     1),
+    pct_Al             = round(100 * total_Al_t       / sum(total_Al_t),       1),
+    pct_Steel          = round(100 * total_Steel_t    / sum(total_Steel_t),    1),
+    pct_EVA            = round(100 * total_EVA_t      / sum(total_EVA_t),      1),
+    pct_Glass          = round(100 * total_Glass_t    / sum(total_Glass_t),    1),
+    pct_CalcMass       = round(100 * total_CalcMass_t / sum(total_CalcMass_t), 1),
     CdTe_t_per_MW      = round(total_CdTe_t    / total_cap_MW, 4),
     Al_t_per_MW        = round(total_Al_t       / total_cap_MW, 3),
     Steel_t_per_MW     = round(total_Steel_t    / total_cap_MW, 3),
+    EVA_t_per_MW       = round(total_EVA_t      / total_cap_MW, 3),
     Glass_t_per_MW     = round(total_Glass_t    / total_cap_MW, 3),
     CalcMass_t_per_MW  = round(total_CalcMass_t / total_cap_MW, 3)
   ) %>%
   arrange(desc(total_modules)) %>%
   slice_head(n = 10)
-
 ```
+
 
 ```{r Array Characteristics by Series}
 thin_film_df %>%
   group_by(predicted_series) %>%
   summarise(
-    avg_modules_per_array = mean(num_modules,  na.rm = TRUE),
-    avg_cap_MW_per_array  = mean(capMW_total,   na.rm = TRUE),
-    median_cap_MW         = median(capMW_total, na.rm = TRUE),
-    avg_area_m2           = mean(totRowArea,    na.rm = TRUE),
-    avg_efficiency        = mean(effInit,       na.rm = TRUE),
-    avg_cap_MW            = mean(capMW,         na.rm = TRUE),
+    avg_modules_per_array     = mean(num_modules,        na.rm = TRUE),
+    avg_cap_MW_per_array      = mean(capMW_total,        na.rm = TRUE),
+    median_cap_MW             = median(capMW_total,      na.rm = TRUE),
+    avg_area_m2               = mean(totRowArea,         na.rm = TRUE),
+    avg_efficiency            = mean(effInit,            na.rm = TRUE),
+    avg_cap_MW                = mean(capMW,              na.rm = TRUE),
+    avg_Glass_kg_per_array    = mean(total_GlassMass_kg, na.rm = TRUE),
+    avg_CalcMass_kg_per_array = mean(total_CalcMass_kg,  na.rm = TRUE),
     .groups = "drop"
   )
 ```
 
 
 
-```{r Distribution of Arrays, Modules, and Capacity by Series}
+```{r Distribution of Arrays, Modules, Capacity, and Total Mass by Series}
 library(tidyverse)
 
 figure5_data <- thin_film_df %>%
   group_by(predicted_series) %>%
   summarise(
-    num_arrays    = n(),
-    total_modules = sum(num_modules,  na.rm = TRUE),
-    total_cap_MW  = sum(capMW_total,   na.rm = TRUE),
+    num_arrays       = n(),
+    total_modules    = sum(num_modules,      na.rm = TRUE),
+    total_cap_MW     = sum(capMW_total,      na.rm = TRUE),
+    total_CalcMass_t = sum(total_CalcMass_kg, na.rm = TRUE) / 1e3,
     .groups = "drop"
   ) %>%
   mutate(
-    pct_arrays   = round(100 * num_arrays    / sum(num_arrays),    1),
-    pct_modules  = round(100 * total_modules / sum(total_modules), 1),
-    pct_capacity = round(100 * total_cap_MW  / sum(total_cap_MW),  1)
+    pct_arrays    = round(100 * num_arrays       / sum(num_arrays),       1),
+    pct_modules   = round(100 * total_modules    / sum(total_modules),    1),
+    pct_capacity  = round(100 * total_cap_MW     / sum(total_cap_MW),     1),
+    pct_mass      = round(100 * total_CalcMass_t / sum(total_CalcMass_t), 1)
   ) %>%
-  select(predicted_series, pct_arrays, pct_modules, pct_capacity) %>%
-  # Pivot to long format so all three metrics can be mapped to fill in one ggplot call
+  select(predicted_series, pct_arrays, pct_modules, pct_capacity, pct_mass) %>%
   pivot_longer(
-    cols      = c(pct_arrays, pct_modules, pct_capacity),
+    cols      = c(pct_arrays, pct_modules, pct_capacity, pct_mass),
     names_to  = "metric",
     values_to = "percentage"
   ) %>%
   mutate(
     metric = recode(metric,
-      "pct_arrays"   = "Arrays (%)",    # share of total array count — how many distinct installations used each series
-      "pct_modules"  = "Modules (%)",   # share of total module count — physical panel count, shaped by module size differences across series
-      "pct_capacity" = "Capacity (%)"   # share of total installed MW — energy contribution of each series
+      "pct_arrays"   = "Arrays (%)",
+      "pct_modules"  = "Modules (%)",
+      "pct_capacity" = "Capacity (%)",
+      "pct_mass"     = "Total Mass (%)"
     ),
-    # Set factor order so bars display in a logical sequence in the legend and plot
-    metric = factor(metric, levels = c("Arrays (%)", "Modules (%)", "Capacity (%)"))
+    metric = factor(metric, levels = c("Arrays (%)", "Modules (%)", "Capacity (%)", "Total Mass (%)"))
   )
 
 ggplot(figure5_data, aes(x = percentage, y = predicted_series, fill = metric)) +
-  # Dodged bars so all three metrics appear side-by-side for each series
-  geom_bar(stat = "identity", position = "dodge", width = 0.7,
+  geom_bar(stat = "identity", position = "dodge", width = 0.75,
            color = "black", linewidth = 0.3) +
-  # Percentage labels placed just outside each bar end for easy reading
-  geom_text(aes(label = paste0(percentage, "%"), x = percentage),
-            position = position_dodge(width = 0.7),
-            vjust = 0.4, hjust = -0.1, size = 2.8, fontface = "bold") +
-  # Manual colors chosen to be distinct and colorblind-accessible
+  geom_text(aes(label = paste0(percentage,"%"), x = percentage),
+            position = position_dodge(width = 0.75),
+            vjust = 0.43, hjust = 1.1, size = 4, fontface = "bold", color = "white") +
   scale_fill_manual(values = c(
-    "Arrays (%)"   = "dodgerblue4",
-    "Modules (%)"  = "mediumpurple2",
-    "Capacity (%)" = "forestgreen"
+    "Arrays (%)"    = "dodgerblue4",
+    "Modules (%)"   = "mediumpurple2",
+    "Capacity (%)"  = "forestgreen",
+    "Total Mass (%)" = "magenta3"
   )) +
-  # x-axis starts at 0; upper limit of 50 gives room for labels beyond the bars
-  scale_x_continuous(limits = c(0, 50), breaks = seq(0, 45, 10),
+  scale_x_continuous(limits = c(0, 55), breaks = seq(0, 50, 10),
                      expand = expansion(mult = c(0, 0.05))) +
+  scale_y_discrete(limits = rev) +
   labs(
-    title    = "Distribution of Arrays, Modules, and Installed Capacity by CdTe Module Series",
-    subtitle = "Percentage of national totals across First Solar Series 2–7",
     x        = "Percentage of National Total (%)",
     y        = "Module Series",
-    fill     = "Metric"
+    fill     = "Legend"
   ) +
   theme_minimal(base_size = 12) +
   theme(
-    plot.title         = element_text(face = "bold", size = 13),
-    plot.subtitle      = element_text(size = 10, color = "grey40"),
-    legend.position    = "top",
-    legend.text        = element_text(size = 10),
-    legend.title       = element_text(size = 10, face = "bold"),
-    axis.text.x        = element_text(size = 10),
-    axis.text.y        = element_text(face = "bold", size = 11),
-    panel.grid.major.y = element_blank(),   # remove horizontal gridlines; bars carry the comparison
-    panel.grid.minor   = element_blank(),
-    plot.background    = element_rect(fill = "white", color = NA),
-    panel.background   = element_rect(fill = "white", color = NA)
+    legend.position      = c(0.83, 0.95),  # top-right corner
+    legend.justification = c(1, 1),         # anchor point is top-right of legend box
+    legend.margin        = margin(4, 8, 4, 8),
+    legend.background    = element_rect(fill = "white", color = "grey80", linewidth = 0.3),
+    legend.text          = element_text(size = 11),
+    legend.title         = element_text(size = 11, face = "bold"),
+    legend.key.size      = unit(1.2, "cm"),
+    axis.text.x          = element_text(size = 10),
+    axis.text.y          = element_text(face = "bold", size = 11),
+    panel.grid.major.y   = element_blank(),
+    panel.grid.minor     = element_blank(),
+    plot.background      = element_rect(fill = "white", color = NA),
+    panel.background     = element_rect(fill = "white", color = NA)
   )
+
+
+ggsave(
+  filename = "C:/Users/miada/Downloads/Energy_Lab/figure5_series_distribution.png",
+  width    = 15,
+  height   = 6,
+  units    = "in",
+  dpi      = 600
+)
 ```
 
 
+
+
+
+```{r Material Intensity per Module by Series - Table PNG}
+library(knitr)
+library(kableExtra)
+library(webshot2)
+library(magick)
+
+material_per_module_table <- tibble(
+  Series                      = c("2", "3", "4", "6", "7"),
+  `Module Area (m2)`             = c(0.72,  0.72,  0.72,  2.47,  2.80),
+  `CdTe (g/mod)`               = c(13,    13,    11,    36,    41  ),
+  `Glass (kg/mod)`             = c(11.52, 11.52, 11.52, 29.08, 29.07),
+  `Aluminum (kg/mod)`          = c(NA,    NA,    NA,    3.9,  NA  ),
+  `Steel (kg/mod)`             = c(NA,    NA,    NA,    NA,    6.44),
+  `EVA (kg/mod)`               = c(0.28,  0.28,  0.28,  0.97,  1.11),
+  `Copper (g/mod)`             = c(43.7,  27.3,  27.3,  16.1,  14.6),
+  `Other (kg/mod)`             = c(0.30,  0.30,  0.30,  0.30,  0.30),
+  `Total Mass (kg/mod)`          = c(12.16, 12.14, 12.14, 34.30, 36.98),
+  `Reported Mass (kg/mod)`     = c(12, 12, 12, 34.5, 39.7 ),
+  `Diff (%)`                   = round(100 * (c(12.16, 12.14, 12.14, 34.30, 36.98) -
+                                              c(12,    12,    12,    34.5,  39.7 )) /
+                                              c(12,    12,    12,    34.5,  39.7 ), 1)
+) %>%
+  mutate(across(where(is.numeric), ~ifelse(is.na(.), "-", as.character(.))))
+
+
+material_per_module_table %>%
+  kbl(align = c("l", rep("c", 9)), booktabs = TRUE) %>%
+  kable_styling(
+    full_width        = FALSE,
+    font_size         = 20,
+    bootstrap_options = c("condensed")
+  ) %>%
+  row_spec(0, bold = TRUE, background = "#18453B", color = "white") %>%
+  row_spec(0:5, extra_css = "border-bottom: 1px solid black;") %>%
+  column_spec(1,  bold = TRUE, background = "#008934", color = "white", extra_css = "text-align: center;") %>%
+  column_spec(2,  extra_css = "border-right: 1px solid black;") %>%
+  column_spec(4,  background = "#D6F5E3") %>%                                            # Glass — now light green
+  column_spec(10, background = "#0B996E", extra_css = "border-left: 3px solid black;") %>%  # Tot mass — stays dark green
+  column_spec(11, width = "2.2cm", extra_css = "text-align: center;") %>% 
+  column_spec(12, width = "1.8cm", extra_css = "text-align: center;") %>% 
+  column_spec(12, background = "#0B996E") %>%      # Diff (%) — new, matches Tot mas 
+  save_kable("C:/Users/miada/Downloads/Energy_Lab/material_intensity_per_module.png",
+             vwidth  = 1400,   # bumped up from default 992 to fit 12 columns
+    vheight = 500,
+    zoom    = 3 
+    )
+```
+
+```{r}
+colnames(thin_film_df)
+write.csv(thin_film_df, "C:/Users/miada/Downloads/Energy_Lab/thin_film_df.csv", row.names = FALSE)
+```
+
+```{r series4-6-overlap-justification}
+## Series 4 vs Series 6 — Overlap Justification Figure
+# --- Panel A: Installation year overlap timeline ---
+overlap_years <- tibble(
+  predicted_series = c("Series 4", "Series 6"),
+  start_year       = c(2016, 2018),
+  end_year         = c(2019, 2022)
+)
+
+overlap_window <- tibble(start = 2018, end = 2019)
+
+p_timeline <- ggplot(overlap_years) +
+  geom_rect(data = overlap_window,
+            aes(xmin = start, xmax = end, ymin = 0.4, ymax = 2.6),
+            fill = "grey85", alpha = 0.6, inherit.aes = FALSE) +
+  geom_segment(aes(x = start_year, xend = end_year,
+                    y = predicted_series, yend = predicted_series,
+                    color = predicted_series),
+               linewidth = 8, lineend = "round") +
+  geom_text(aes(x = (start_year + end_year) / 2, y = predicted_series,
+                label = paste0(start_year, "\u2013", end_year)),
+            color = "white", fontface = "bold", size = 3.5) +
+  annotate("text", x = 2018.5, y = 2.6,
+           label = "Overlap window\n(2018\u20132019)",
+           vjust = -0.3, size = 3.2, fontface = "italic", color = "grey30") +
+  scale_color_manual(values = c("Series 4" = "#96CDCD", "Series 6" = "navy")) +
+  scale_x_continuous(breaks = 2016:2022) +
+  labs(title = "Series 4 vs. Series 6 Installation Windows",
+       x = "Installation Year", y = NULL) +
+  theme_minimal(base_size = 12) +
+  theme(legend.position = "none",
+        panel.grid.minor  = element_blank(),
+        axis.text.y       = element_text(face = "bold"))
+
+# --- Panel B: Proportion of arrays affected ---
+# --- Panel B: Proportion of arrays affected, with overlap-year breakdown ---
+overlap_summary <- thin_film_df %>%
+  mutate(
+    group = case_when(
+      predicted_series %in% c("Series 4", "Series 6") & instYr %in% c(2018, 2019) ~
+        "Series 4/6 — overlap years (2018–2019)",
+      predicted_series %in% c("Series 4", "Series 6") ~
+        "Series 4/6 — other years",
+      TRUE ~ "Other series"
+    ),
+    group = factor(group, levels = c(
+      "Other series",
+      "Series 4/6 — other years",
+      "Series 4/6 — overlap years (2018–2019)"
+    ))
+  ) %>%
+  count(group) %>%
+  mutate(pct = round(100 * n / sum(n), 1))
+
+p_proportion <- ggplot(overlap_summary, aes(x = "", y = pct, fill = group)) +
+  geom_col(width = 0.5, color = "black", linewidth = 0.3) +
+  geom_text(aes(label = paste0(pct, "%")),
+            position = position_stack(vjust = 0.5),
+            color = "white", fontface = "bold", size = 3.6) +
+  scale_fill_manual(values = c(
+    "Other series"                            = "grey80",
+    "Series 4/6 — other years"                = "#96CDCD",
+    "Series 4/6 — overlap years (2018–2019)"  = "navy"
+  )) +
+  labs(title = "Share of Arrays Requiring\nSeries 4/6 Disambiguation",
+       x = NULL, y = "% of Total Arrays", fill = NULL) +
+  guides(fill = guide_legend(ncol = 1)) +
+  theme_minimal(base_size = 12) +
+  theme(legend.position    = "bottom",
+        legend.text        = element_text(size = 8.5),
+        panel.grid.major.x = element_blank())
+
+# --- Combine ---
+p_timeline + p_proportion +
+  plot_layout(widths = c(1.6, 1)) +
+  plot_annotation(
+    title    = "Why Series 4 and 6 Classification Needs Refinement",
+    theme    = theme(plot.title = element_text(face = "bold", size = 14))
+  )
+```
+
+```{r}
+library(plotly)
+library(dplyr)
+
+# --- Node order ---
+series_levels   <- c("Series 2", "Series 3", "Series 4", "Series 6", "Series 7")  # top -> bottom
+material_levels <- c("Glass", "EVA", "CdTe", "Copper", "Other", "Aluminum", "Steel")  # Steel at very bottom, Aluminum second-to-last
+node_labels      <- c(series_levels, material_levels)
+node_labels_bold <- paste0("<b>", node_labels, "</b>")
+
+# --- Link colors defined FIRST, before anything references them ---
+series_link_colors <- c(
+  "Series 2" = "rgba(183,228,160,0.85)",  # extra opacity so it stays visible even when thin
+  "Series 3" = "rgba(90,174,97,0.55)",
+  "Series 4" = "rgba(69,123,157,0.55)",
+  "Series 6" = "rgba(185,131,196,0.55)",
+  "Series 7" = "rgba(58,0,96,0.55)"
+)
+
+# --- Total module counts per series (used to normalize mass -> mass per module) ---
+total_modules_lookup <- tibble(
+  predicted_series = c("Series 2", "Series 3", "Series 4", "Series 6", "Series 7"),
+  total_modules     = c(5686490, 41009416, 39113605, 29798952, 30527452)
+)
+
+# --- Build source/target/value from sankey_long, normalized to mass per module ---
+sankey_plotly_df <- sankey_long %>%
+  mutate(
+    predicted_series = as.character(predicted_series),
+    material         = as.character(material)
+  ) %>%
+  left_join(total_modules_lookup, by = "predicted_series") %>%
+  mutate(
+    mass_kg_per_module = mass_kg / total_modules,
+    source = match(predicted_series, node_labels) - 1,
+    target = match(material, node_labels) - 1
+  ) %>%
+  arrange(desc(mass_kg_per_module))   # largest flows first, smallest drawn LAST = on top
+
+link_colors <- unname(series_link_colors[sankey_plotly_df$predicted_series])
+
+# --- Node colors ---
+node_colors <- c(
+  unname(c("Series 2"="#B7E4A0","Series 3"="#5AAE61","Series 4"="#457B9D",
+           "Series 6"="#B983C4","Series 7"="#3A0060")[series_levels]),
+  rep("#4A4A4A", length(material_levels))
+)
+
+n_series   <- length(series_levels)
+n_material <- length(material_levels)
+
+# --- Compute each node's total flow value (drives node height / y position) ---
+series_totals <- sankey_plotly_df %>%
+  group_by(predicted_series) %>%
+  summarise(total = sum(mass_kg_per_module), .groups = "drop") %>%
+  slice(match(series_levels, predicted_series))
+
+material_totals <- sankey_plotly_df %>%
+  group_by(material) %>%
+  summarise(total = sum(mass_kg_per_module), .groups = "drop") %>%
+  slice(match(material_levels, material))
+
+make_y_positions <- function(totals, gap = 0.03) {
+  totals <- totals / sum(totals)
+  n <- length(totals)
+  usable_height <- 1 - gap * (n - 1)
+  heights <- totals * usable_height
+  y_start <- cumsum(c(0, heights[-n])) + gap * (seq_len(n) - 1)
+  y_mid   <- y_start + heights / 2
+  pmin(pmax(y_mid, 0.01), 0.99)
+}
+
+y_series   <- make_y_positions(series_totals$total)
+y_material <- make_y_positions(material_totals$total)
+
+node_x <- c(rep(0.01, n_series), rep(0.99, n_material))
+node_y <- c(y_series, y_material)
+
+# --- Build the Sankey ---
+p <- plot_ly(
+  type   = "sankey",
+  orientation = "h",
+  arrangement = "fixed",
+  node = list(
+    label     = node_labels_bold,
+    color     = node_colors,
+    x         = node_x,
+    y         = node_y,
+    pad       = 18,
+    thickness = 14,
+    line      = list(color = "white", width = 0),
+    textfont  = list(color = "black", size = 13, family = "Arial")
+  ),
+  link = list(
+    source = sankey_plotly_df$source,
+    target = sankey_plotly_df$target,
+    value  = sankey_plotly_df$mass_kg_per_module,
+    color  = link_colors
+  )
+) %>%
+  layout(
+    font = list(size = 13, family = "Arial", color = "black"),
+    plot_bgcolor  = "white",
+    paper_bgcolor = "white",
+    margin = list(t = 70, l = 20, r = 20, b = 20)
+  )
+
+p
+```
+```{r}
+library(plotly)
+library(dplyr)
+
+# --- Node order for the "lower mass" view ---
+material_levels_low <- c("EVA", "CdTe", "Copper", "Other")  # top bottom, adjust order as you like
+node_labels_low      <- c(series_levels, material_levels_low)
+node_labels_low_bold <- paste0("<b>", node_labels_low, "</b>")
+
+# --- Filter existing sankey_plotly_df down to just these materials ---
+sankey_plotly_df_low <- sankey_plotly_df %>%
+  filter(material %in% material_levels_low) %>%
+  mutate(
+    source = match(predicted_series, node_labels_low) - 1,
+    target = match(material, node_labels_low) - 1
+  ) %>%
+  arrange(desc(mass_kg_per_module))
+
+link_colors_low <- unname(series_link_colors[sankey_plotly_df_low$predicted_series])
+
+# --- Node colors ---
+node_colors_low <- c(
+  unname(c("Series 2"="#B7E4A0","Series 3"="#5AAE61","Series 4"="#457B9D",
+           "Series 6"="#B983C4","Series 7"="#3A0060")[series_levels]),
+  rep("#4A4A4A", length(material_levels_low))
+)
+
+n_series_low   <- length(series_levels)
+n_material_low <- length(material_levels_low)
+
+# --- Recompute totals + y-positions for this subset only ---
+series_totals_low <- sankey_plotly_df_low %>%
+  group_by(predicted_series) %>%
+  summarise(total = sum(mass_kg_per_module), .groups = "drop") %>%
+  slice(match(series_levels, predicted_series))
+
+material_totals_low <- sankey_plotly_df_low %>%
+  group_by(material) %>%
+  summarise(total = sum(mass_kg_per_module), .groups = "drop") %>%
+  slice(match(material_levels_low, material))
+
+y_series_low   <- make_y_positions(series_totals_low$total)
+y_material_low <- make_y_positions(material_totals_low$total)
+
+node_x_low <- c(rep(0.01, n_series_low), rep(0.99, n_material_low))
+node_y_low <- c(y_series_low, y_material_low)
+
+# --- Build the "lower mass" Sankey ---
+p_low <- plot_ly(
+  type   = "sankey",
+  orientation = "h",
+  arrangement = "fixed",
+  node = list(
+    label     = node_labels_low_bold,
+    color     = node_colors_low,
+    x         = node_x_low,
+    y         = node_y_low,
+    pad       = 18,
+    thickness = 14,
+    line      = list(color = "white", width = 0),
+    textfont  = list(color = "black", size = 13, family = "Arial")
+  ),
+  link = list(
+    source = sankey_plotly_df_low$source,
+    target = sankey_plotly_df_low$target,
+    value  = sankey_plotly_df_low$mass_kg_per_module,
+    color  = link_colors_low
+  )
+) %>%
+  layout(
+    font = list(size = 13, family = "Arial", color = "black"),
+    plot_bgcolor  = "white",
+    paper_bgcolor = "white",
+    margin = list(t = 70, l = 20, r = 20, b = 20)
+  )
+
+p_low
+```
+
+
+```{r}
+sankey_plotly_df %>%
+  group_by(predicted_series) %>%
+  summarise(total = sum(mass_kg_per_module), n_materials = n())
+```
+
+
+
+```{r}
+# One-time setup for static export (kaleido backend)
+# install.packages("reticulate")
+# reticulate::install_miniconda()
+# reticulate::py_install("kaleido")
+
+save_image(p, "C:/Users/miada/Downloads/Energy_Lab/sankey.png",
+           width = 1600, height = 900, scale = 3)
+
+# Vector format if your journal wants true vector (SVG/PDF)
+save_image(p, "C:/Users/miada/Downloads/Energy_Lab/sankey_publication.svg",
+           width = 1600, height = 900)
+save_image(p, "C:/Users/miada/Downloads/Energy_Lab/sankey_publication.pdf",
+           width = 1600, height = 900)
+```
+
+
+```{r}
+library(plotly)
+library(dplyr)
+
+# --- Reuse the same summary math, but keep raw totals (not yet %) for flexibility ---
+sankey_metric_long <- thin_film_df %>%
+  group_by(predicted_series) %>%
+  summarise(
+    Arrays   = n(),
+    Modules  = sum(num_modules,       na.rm = TRUE),
+    Capacity = sum(capMW_total,       na.rm = TRUE),
+    `Total Mass` = sum(total_CalcMass_kg, na.rm = TRUE) / 1e3,
+    .groups = "drop"
+  ) %>%
+  pivot_longer(-predicted_series, names_to = "metric", values_to = "raw_value") %>%
+  group_by(metric) %>%
+  mutate(pct_of_metric = 100 * raw_value / sum(raw_value)) %>%   # % of that metric's national total
+  ungroup()
+
+# --- Node order: series top->bottom as before, metrics in fixed order ---
+series_levels <- c("Series 7", "Series 6", "Series 4", "Series 3", "Series 2")
+metric_levels <- c("Arrays", "Modules", "Capacity", "Total Mass")
+node_labels   <- c(series_levels, metric_levels)
+node_labels_bold <- paste0("<b>", node_labels, "</b>")
+
+sankey_plotly_df <- sankey_metric_long %>%   # or sankey_long, for the material version
+  mutate(
+    predicted_series = as.character(predicted_series),
+    source = match(predicted_series, node_labels) - 1,
+    target = match(metric, node_labels) - 1     # or `material` for the other chart
+  ) %>%
+  arrange(desc(pct_of_metric))   # <- largest values first, smallest (Series 2) drawn LAST = on top
+
+link_colors <- unname(series_link_colors[sankey_plotly_df$predicted_series])
+
+node_colors <- c(
+  unname(c("Series 7"="#3A0060","Series 6"="#B983C4","Series 4"="#457B9D",
+           "Series 3"="#5AAE61","Series 2"="#B7E4A0")[series_levels]),
+  rep("#4A4A4A", length(metric_levels))
+)
+
+series_link_colors <- c(
+  "Series 2" = "rgba(183,228,160,0.55)",
+  "Series 3" = "rgba(90,174,97,0.55)",
+  "Series 4" = "rgba(69,123,157,0.55)",
+  "Series 6" = "rgba(185,131,196,0.55)",
+  "Series 7" = "rgba(58,0,96,0.55)"
+)
+link_colors <- unname(series_link_colors[sankey_plotly_df$predicted_series])
+
+n_series <- length(series_levels)
+n_metric <- length(metric_levels)
+
+# --- Proportional y positions so nodes never overlap ---
+series_totals <- sankey_plotly_df %>%
+  group_by(predicted_series) %>%
+  summarise(total = sum(pct_of_metric), .groups = "drop") %>%
+  slice(match(series_levels, predicted_series))
+
+metric_totals <- sankey_plotly_df %>%
+  group_by(metric) %>%
+  summarise(total = sum(pct_of_metric), .groups = "drop") %>%
+  slice(match(metric_levels, metric))
+
+make_y_positions <- function(totals, gap = 0.03) {
+  totals <- totals / sum(totals)
+  n <- length(totals)
+  usable_height <- 1 - gap * (n - 1)
+  heights <- totals * usable_height
+  y_start <- cumsum(c(0, heights[-n])) + gap * (seq_len(n) - 1)
+  y_mid   <- y_start + heights / 2
+  pmin(pmax(y_mid, 0.01), 0.99)
+}
+
+y_series <- make_y_positions(series_totals$total)
+y_metric <- make_y_positions(metric_totals$total)
+
+node_x <- c(rep(0.01, n_series), rep(0.99, n_metric))
+node_y <- c(y_series, y_metric)
+
+p <- plot_ly(
+  type   = "sankey",
+  orientation = "h",
+  arrangement = "fixed",
+  node = list(
+    label     = node_labels_bold,
+    color     = node_colors,
+    x         = node_x,
+    y         = node_y,
+    pad       = 18,
+    thickness = 14,
+    line      = list(color = "white", width = 0),
+    textfont  = list(color = "black", size = 13, family = "Arial")
+  ),
+  link = list(
+    source = sankey_plotly_df$source,
+    target = sankey_plotly_df$target,
+    value  = sankey_plotly_df$pct_of_metric,
+    color  = link_colors
+  )
+) %>%
+  layout(
+    font = list(size = 13, family = "Arial", color = "black"),
+    plot_bgcolor  = "white",
+    paper_bgcolor = "white",
+    margin = list(t = 70, l = 20, r = 20, b = 20)
+  )
+
+p
+
+# sVING
+#save_image(p, "C:/Users/miada/Downloads/Energy_Lab/sankey_series_metrics.png",
+   #        width = 1600, height = 900, scale = 3)
+```
+
+```{r}
+library(plotly)
+library(dplyr)
+
+# --- Node order ---
+series_levels <- c("Series 2", "Series 3", "Series 4", "Series 6", "Series 7")  # top -> bottom
+metric_levels <- c("Arrays", "Modules", "Capacity", "Total Mass")
+
+node_labels      <- c(series_levels, metric_levels)
+node_labels_bold <- paste0("<b>", node_labels, "</b>")
+
+# --- Link colors ---
+series_link_colors <- c(
+  "Series 2" = "rgba(183,228,160,0.85)",
+  "Series 3" = "rgba(90,174,97,0.55)",
+  "Series 4" = "rgba(69,123,157,0.55)",
+  "Series 6" = "rgba(185,131,196,0.55)",
+  "Series 7" = "rgba(58,0,96,0.55)"
+)
+
+# --- Build source/target/value from the metrics dataset ---
+sankey_plotly_df <- sankey_metric_long %>%
+  mutate(
+    predicted_series = as.character(predicted_series),
+    source = match(predicted_series, node_labels) - 1,
+    target = match(metric, node_labels) - 1
+  ) %>%
+  arrange(desc(pct_of_metric))   # largest flows first, Series 2 (thinnest) drawn LAST = on top
+
+link_colors <- unname(series_link_colors[sankey_plotly_df$predicted_series])
+
+# --- Node colors ---
+node_colors <- c(
+  unname(c("Series 2"="#B7E4A0","Series 3"="#5AAE61","Series 4"="#457B9D",
+           "Series 6"="#B983C4","Series 7"="#3A0060")[series_levels]),
+  rep("#4A4A4A", length(metric_levels))
+)
+
+n_series <- length(series_levels)
+n_metric <- length(metric_levels)
+
+# --- Compute each node's total flow value (drives node height / y position) ---
+series_totals <- sankey_plotly_df %>%
+  group_by(predicted_series) %>%
+  summarise(total = sum(pct_of_metric), .groups = "drop") %>%
+  slice(match(series_levels, predicted_series))
+
+metric_totals <- sankey_plotly_df %>%
+  group_by(metric) %>%
+  summarise(total = sum(pct_of_metric), .groups = "drop") %>%
+  slice(match(metric_levels, metric))
+
+make_y_positions <- function(totals, gap = 0.03) {
+  totals <- totals / sum(totals)
+  n <- length(totals)
+  usable_height <- 1 - gap * (n - 1)
+  heights <- totals * usable_height
+  y_start <- cumsum(c(0, heights[-n])) + gap * (seq_len(n) - 1)
+  y_mid   <- y_start + heights / 2
+  pmin(pmax(y_mid, 0.01), 0.99)
+}
+
+y_series <- make_y_positions(series_totals$total)
+y_metric <- make_y_positions(metric_totals$total)
+
+node_x <- c(rep(0.01, n_series), rep(0.99, n_metric))
+node_y <- c(y_series, y_metric)
+
+# --- Build the Sankey ---
+p <- plot_ly(
+  type   = "sankey",
+  orientation = "h",
+  arrangement = "fixed",
+  node = list(
+    label     = node_labels_bold,
+    color     = node_colors,
+    x         = node_x,
+    y         = node_y,
+    pad       = 18,
+    thickness = 14,
+    line      = list(color = "white", width = 0),
+    textfont  = list(color = "black", size = 13, family = "Arial")
+  ),
+  link = list(
+    source = sankey_plotly_df$source,
+    target = sankey_plotly_df$target,
+    value  = sankey_plotly_df$pct_of_metric,
+    color  = link_colors
+  )
+) %>%
+  layout(
+    font = list(size = 13, family = "Arial", color = "black"),
+    plot_bgcolor  = "white",
+    paper_bgcolor = "white",
+    margin = list(t = 30, l = 20, r = 20, b = 20)  # smaller top margin now that title is gone
+  )
+
+p
+```
 
 
