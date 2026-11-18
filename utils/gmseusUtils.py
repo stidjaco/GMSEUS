@@ -440,7 +440,7 @@ def copyEIA860ModType(targetDF, targetEIA_ID, targetTechCol, eiaPath,
     return targetDF
 
 # Function to assign mount type to solar panel-rows based on azimuth and panel geometry. Also returns all relevant design parameters for each panel-row. Requires the setting of a length ratio threshold and an area ratio threshold.
-def assignMountType(feature):
+def assignMountType(feature, config):
     # Estimate azimuth of solar panel-row short edge
     def getAzimuth(feature):
         # Get the minimum bounding rectangle (oriented)
@@ -518,7 +518,6 @@ def assignMountType(feature):
     # Dual-axis: Any azimuth and the length ratio is less than 2.5
     def classify_mount_type(azimuth, length_ratio):
         # Load the config from the text file and all required variables
-        config = load_config()
         lengthRatioThresh = config['lengthRatioThresh']  # If length ratio < 3.0, set to dual_axis or else fixed_axis_diagonal, else single- or fixed-axis
 
         # Check if azimuth is within 60 degrees to to S (180) -- Should never be north
@@ -545,9 +544,8 @@ def assignMountType(feature):
     return mount, azimuth, length_ratio, short_edge, long_edge
 
 # Function to check for and remove erroneous geometries in arrays
-def checkArrayGeometries(arrays): 
-    # Load the config from the text file
-    config = load_config()
+def checkArrayGeometries(arrays, config): 
+    # config: dict from load_config(), loaded once by the caller
     minPanelRowArea = config['minPanelRowArea'] # 15 m2, minimum area for a single panel row from the 1st percentile panel area from Stid et al., 2022
     
     # For a collection of reasons, array boundaries may contain erroneous geometries that result in a near-zero area, linestrings, or points. 
@@ -562,44 +560,77 @@ def checkArrayGeometries(arrays):
     return arrays
 
 # Function to create an array from a set of panel rows based on the distance between them
-def createArrayFromPanels(panelsGDF, buffDist, dissolveID, areaID='area', getArrayStats=True):
+# Array membership uses the original round buffer-dissolve-unbuffer (BDU), so arrays are identical to prior GM-SEUS versions.
+# Array outlines use a mitre BDU within each array, which keeps square corners and far fewer vertices than round joins.
+def createArrayFromPanels(panelsGDF, buffDist, dissolveID, config, areaID='area', getArrayStats=True):
 
     # Create a copy of the panels GeoDataFrame to avoid modifying the original
-    panels = panelsGDF.copy()
+    panels = panelsGDF.copy().reset_index(drop=True)
 
     # If dissolveID is absent or "", create a temporary dissolveID
     if dissolveID is None or dissolveID == '':
         panels['tempDissolveID'] = 1
         dissolveID = 'tempDissolveID'
-    
-    # Buffer the geometries by buffDist, dissovle boundaries, and unbuffer by buffDist* -1. Assign the number of objects being dissovle into a numPanels column.
-    arrays = panels.copy()
-    arrays['geometry'] = arrays.buffer(buffDist)
-    arrays = arrays.dissolve(by=[dissolveID], as_index=False)
-    arrays['geometry'] = arrays.buffer(buffDist * -1)
+
+    # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ Array membership (round BDU)
+
+    # Buffer the geometries by buffDist (round joins), dissolve boundaries, and unbuffer by buffDist * -1. This defines which panels belong to the same array.
+    roundArrays = panels[[dissolveID, 'geometry']].copy()
+    roundArrays['geometry'] = roundArrays.buffer(buffDist)
+    roundArrays = roundArrays.dissolve(by=[dissolveID], as_index=False)
+    roundArrays['geometry'] = roundArrays.buffer(buffDist * -1)
 
     # If a temporary dissolveID was created, explode arrays
     if dissolveID == 'tempDissolveID':
-        arrays = arrays.explode(index_parts=False).reset_index(drop=True)
+        roundArrays = roundArrays.explode(index_parts=False).reset_index(drop=True)
+
+    # Keep the dissolveID value under a separate name (checkArrayGeometries drops tempDissolveID), then remove erroneous near-zero geometries
+    roundArrays['grpKey'] = roundArrays[dissolveID]
+    roundArrays = checkArrayGeometries(roundArrays, config)
+    roundArrays['tempArrayID'] = np.arange(len(roundArrays))
+
+    # Assign each panel to one round array using a single interior point, matching on dissolveID so overlapping groups do not mix
+    pnlPts = panels[[dissolveID, 'geometry']].copy()
+    pnlPts['geometry'] = panels.representative_point()
+    pnlPts = gpd.sjoin(pnlPts, roundArrays[['grpKey', 'tempArrayID', 'geometry']], how='left', predicate='within')
+    pnlPts = pnlPts[pnlPts[dissolveID] == pnlPts['grpKey']]
+    pnlPts = pnlPts[~pnlPts.index.duplicated(keep='first')]
+    panels['tempArrayID'] = pnlPts['tempArrayID']
+
+    # Panels not in any round array (removed by checkArrayGeometries) are excluded, as in the original method
+    grouped = panels.dropna(subset=['tempArrayID']).copy()
+    grouped['tempArrayID'] = grouped['tempArrayID'].astype(int)
+
+    # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ Array outline (mitre BDU)
+
+    # Within each array, buffer by buffDist using mitre joins, dissolve, and unbuffer by buffDist * -1 using mitre joins
+    arrays = grouped[['tempArrayID', 'geometry']].copy()
+    arrays['geometry'] = arrays.buffer(buffDist, join_style='mitre', mitre_limit=10.0)
+    arrays = arrays.dissolve(by='tempArrayID', as_index=False)
+    arrays['geometry'] = arrays.buffer(buffDist * -1, join_style='mitre', mitre_limit=10.0)
+
+    # Union the panels back into their array so no panel is clipped by the mitre unbuffer. An array that the mitre unbuffer splits at a corner stays one (multipart) array.
+    panelUnion = grouped.dissolve(by='tempArrayID')['geometry']
+    arrays['geometry'] = [g.union(panelUnion.loc[k]) for k, g in zip(arrays['tempArrayID'], arrays.geometry)]
+
+    # Remove collinear vertices left by the union with panel edges (1 cm tolerance)
+    arrays['geometry'] = arrays.simplify(0.01)
+
+    # Carry the user-provided dissolveID onto the arrays (not needed for the temporary dissolveID)
+    if dissolveID != 'tempDissolveID':
+        arrays = arrays.merge(roundArrays[['tempArrayID', 'grpKey']].rename(columns={'grpKey': dissolveID}), on='tempArrayID', how='left')
+
+    # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ Array stats
 
     # If getArrayStats is True, calculate the number of panels and total panel area within each array
     if getArrayStats:
-        # Count panels per group before dissolving
-        panelCounts = panels.groupby(dissolveID).size().reset_index(name='numPanels')
+        panelStats = grouped.groupby('tempArrayID').agg(numPanels=('geometry', 'size'), pnlArea=(areaID, 'sum')).reset_index()
+        arrays = arrays.merge(panelStats, on='tempArrayID', how='left')
 
-        # Get the total area of the panels within each group (sum of area column). 
-        panelAreas = panels.groupby(dissolveID)[areaID].sum().reset_index(name='pnlArea')
-
-        # Merge the panel counts and panel areas back into the dissolved array DataFrame. Select only the dissolveID and respective columns in the right df
-        arrays = arrays.merge(panelCounts[[dissolveID, 'numPanels']], on=dissolveID, how='left')
-        arrays = arrays.merge(panelAreas[[dissolveID, 'pnlArea']], on=dissolveID, how='left')
-
-    # Due to the buffering and unbuffering, some mulitpolygons contain erroneous geometries that result in a near-zero area, linestrings, or points. Remove these.
-    arrays = checkArrayGeometries(arrays)
-
-    # Reset index and drop temporary dissolveID if it was created
+    # Reset index and drop temporary columns
+    arrays = gpd.GeoDataFrame(arrays, geometry='geometry', crs=panels.crs)
+    arrays = arrays.drop(columns=['tempArrayID', 'tempDissolveID', 'grpKey'], errors='ignore')
     arrays = arrays.reset_index(drop=True)
-    arrays = arrays.drop(columns='tempDissolveID', errors='ignore')
     return arrays
 
 # Define a function that groups solar panels by mount type and proximity
@@ -934,10 +965,9 @@ def iterateFillMetadataByOverlap(gdfAll, gdfMetadataPriorityList, aggConfig):
     return gdfAll
 
 # Function to read in the shapefiles/geojsons from folder and return a processed panel geodataframe
-def getPanels_method(path):
+def getPanels_method(path, config):
 
-    # Load the config from the text file
-    config = load_config()
+    # config: dict from load_config(), loaded once by the caller
     gee_crs = config['gee_crs'] # native projection of Google Earth Engine exports
     toCRS = config['to_crs']  # EPSG:6350 NAD83 (2011)
 
@@ -992,10 +1022,9 @@ def getPanels_method(path):
     return solarPanels
 
 # Function to give a gdf list that is in preferential order for spatial filtering, and create merged panel datasets
-def preferentialSpatialPanelRowFilter(gdfList):
+def preferentialSpatialPanelRowFilter(gdfList, config):
 
-    # Load the config from the text file
-    config = load_config()
+    # config: dict from load_config(), loaded once by the caller
     panelArrayBuff = config['panelArrayBuff']  # Buffer distance between panels and arrays in meters
     toCRS = config['to_crs']  # EPSG:6350 NAD83 (2011)
 
@@ -1015,7 +1044,7 @@ def preferentialSpatialPanelRowFilter(gdfList):
     # Create arrays from panels for each GeoDataFrame
     arrayGdfList = []
     for i in range(len(gdfList)):
-        arrayGdf = createArrayFromPanels(gdfList[i], panelArrayBuff, '', '', False)
+        arrayGdf = createArrayFromPanels(gdfList[i], panelArrayBuff, '', config, '', False)
         arrayGdfList.append(arrayGdf)
 
     # Set source columns WITHIN GDF to compare after preferential spatial filtering
@@ -1057,9 +1086,8 @@ def preferentialSpatialPanelRowFilter(gdfList):
     return mergedPanels
 
 # Create a function to calculate the inter-row spacing for each panel in the same array in the direction of the azimuth (for fixed-axis and single-axis arrays) and any direction (for dual-axis arrays)
-def calculateRowSpacing(gdf):
-    # Load the config from the text file
-    config = load_config()
+def calculateRowSpacing(gdf, config):
+    # config: dict from load_config(), loaded once by the caller
     panelArrayBuff = config['panelArrayBuff']  # Buffer distance between panels and arrays in meters
     
     # Set columns

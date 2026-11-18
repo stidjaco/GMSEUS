@@ -64,10 +64,9 @@ countryRegionsDict = {
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ OpenStreetMap Functions
 
 # Define a function that grabs all solar panel and array data from OSM for a given region
-def getSolarOSMData(regionName, countryName, osmPlanetPBF=None):
+def getSolarOSMData(regionName, countryName, config, osmPlanetPBF=None):
 
-    # Load the config from the text file and all required variables
-    config = gu.load_config()
+    # config: dict from gu.load_config(), loaded once by the caller
     toCRS = config['to_crs']  # EPSG:6350 NAD83 (2011)
     toCRS = f'EPSG:{toCRS}'
 
@@ -305,10 +304,9 @@ def getSolarOSMData(regionName, countryName, osmPlanetPBF=None):
     return panelData, arrayData
 
 # Define Function to Process Solar OSM Data
-def processSolarOSMData(regionName, countryName, wd, osmPlanetPBF=None):   
+def processSolarOSMData(regionName, countryName, wd, config, osmPlanetPBF=None):   
 
-    # Load the config from the text file and all required variables
-    config = gu.load_config()
+    # config: dict from gu.load_config(), loaded once by the caller
     minPanelRowArea = config['minPanelRowArea'] # 15 m2, minimum area for a single panel row from the 1st percentile panel area from Stid et al., 2022
     maxPanelRowArea = config['maxPanelRowArea'] # 254 m2 95th perccentile for a single panel row from Stid et al., 2022. MSU Solar Carport has max 1890m2
     minNumPanelRows = config['minNumPanelRows'] # 3 panels, minimum number of panels rows to form a ground mounted solar array, definition from Stid et al., 2022
@@ -334,9 +332,9 @@ def processSolarOSMData(regionName, countryName, wd, osmPlanetPBF=None):
 
     # Get the solar panel and array data from OSM
     if osmPlanetPBF is None:
-        panelData, arrayData = getSolarOSMData(regionName, countryName)
+        panelData, arrayData = getSolarOSMData(regionName, countryName, config)
     else:
-        panelData, arrayData = getSolarOSMData(regionName, countryName, osmPlanetPBF=osmPlanetPBF)
+        panelData, arrayData = getSolarOSMData(regionName, countryName, config, osmPlanetPBF=osmPlanetPBF)
 
     #~~~~~~~~~~~~~~~~~~~~# 
     # Process Array Data # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -469,12 +467,12 @@ def processSolarOSMData(regionName, countryName, wd, osmPlanetPBF=None):
     # ~~~~~~~~~~~~~~~~~~ Get New Array Boudaries From Panel Data
 
         # Get the mount type for each panel based on the geometry. assignMountType returns multiple columns, so only return the mount column.
-        panelData['mount'] = panelData.apply(gu.assignMountType, axis=1).apply(lambda x: x[0]) # panelData['mount'] = panelData.apply(assignMountType, axis=1)
-        # panelData[['mount', 'azimuth', 'length_ratio', 'short_edge', 'long_edge']] = panelData.apply(gu.assignMountType, axis=1, result_type='expand')
+        panelData['mount'] = panelData.apply(gu.assignMountType, axis=1, args=(config,)).apply(lambda x: x[0]) # panelData['mount'] = panelData.apply(assignMountType, axis=1)
+        # panelData[['mount', 'azimuth', 'length_ratio', 'short_edge', 'long_edge']] = panelData.apply(gu.assignMountType, axis=1, result_type='expand', args=(config,))
         # panelData = panelData.drop(columns=['azimuth', 'length_ratio', 'short_edge', 'long_edge'])
 
         # Create arrays from adjacent panel-rows
-        arrayFromPanelData = gu.createArrayFromPanels(panelData, panelArrayBuff, '', '', False)
+        arrayFromPanelData = gu.createArrayFromPanels(panelData, panelArrayBuff, '', config, '', False)
 
         # Save the most common mount type for each array based on panels that intersect with the array
         arrayFromPanelData['mount'] = arrayFromPanelData['geometry'].apply(lambda x: panelData[panelData.intersects(x)]['mount'].mode()[0])
@@ -649,13 +647,12 @@ def processSolarOSMData(regionName, countryName, wd, osmPlanetPBF=None):
     #return panelData, arrayData
 
 # Define function to iterate through each region in a country and extract OSM solar data
-def getCountrySolarOSMData(countryName, wd, processCountry=True):
+def getCountrySolarOSMData(countryName, wd, config, processCountry=True):
 
     # Get regions within the country from the above dictionary
     regions = countryRegionsDict[countryName]
 
-    # Load the config from the text file and all required variables
-    config = gu.load_config()
+    # config: dict from gu.load_config(), loaded once by the caller
     toCRS = config['to_crs']  # EPSG:6350 NAD83 (2011)
     toCRS = f'EPSG:{toCRS}'
 
@@ -675,7 +672,7 @@ def getCountrySolarOSMData(countryName, wd, processCountry=True):
 
     # Loop through each region and get the solar data
     for region in regions:
-        processSolarOSMData(region, countryName, osmPanelsPath, osmArraysPath)
+        processSolarOSMData(region, countryName, wd, config)
         print(region + ' data has been downloaded and processed.')
     
     # If processCountry is True, load all data and print summary statistics, and export combined shapefiles
