@@ -1,5 +1,7 @@
-modules/dev/
+modules/dev/archive/
+modules/dev/playground.ipynb
 __pycache__/
 .vscode/
 .claude/
 *.egg-info/
+Thumbs.db
