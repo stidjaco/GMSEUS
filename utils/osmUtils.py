@@ -5,7 +5,12 @@ import numpy as np
 import os
 from shapely.ops import unary_union
 import shapely.wkb as wkblib
+from shapely.geometry import MultiPolygon, Point
 import re
+import json
+import time
+import hashlib
+import requests
 
 # Load OSM libraries and variables
 import osmium as osm
@@ -61,12 +66,203 @@ countryRegionsDict = {
 
 
 
+# ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ Bulk (PBF) OpenStreetMap Functions
+# Workflow for the bulk method (alternative to the Overpass API used by default):
+#   1. downloadGeofabrikPBF()  -> download a regional extract (e.g., 'north-america') or use an existing planet.osm.pbf
+#   2. extractSolarFromPBF()   -> ONE pass over the PBF that keeps only solar features and saves them to a small GeoPackage
+#   3. processSolarOSMData(..., method='pbf', osmSolar=<GeoPackage path or loaded gdf>) clips that file per region
+# NOTE: Geofabrik 'north-america' covers USA, Canada, Mexico, and Greenland. Central America/Caribbean countries are in 'central-america'. Planet covers all.
+
+# Solar tags used for both methods (any feature with either tag is kept; arrays vs panels are split later by 'power')
+solarTagFilter = {"plant:source": "solar", "generator:source": "solar"}
+
+# Define a function to download an OSM extract from Geofabrik (https://download.geofabrik.de/)
+def downloadGeofabrikPBF(geofabrikRegion, outDir, overwrite=False, checkMD5=True):
+    # geofabrikRegion: Geofabrik path without '-latest.osm.pbf', e.g., 'north-america', 'north-america/us', 'north-america/canada', 'central-america', 'north-america/us/rhode-island'
+    url = f"https://download.geofabrik.de/{geofabrikRegion}-latest.osm.pbf"
+    gu.checkFolder(outDir)
+    outPath = os.path.join(outDir, geofabrikRegion.split('/')[-1] + '-latest.osm.pbf')
+
+    # Skip if already downloaded
+    if os.path.exists(outPath) and not overwrite:
+        print(f"PBF already exists, skipping download: {outPath}")
+        return outPath
+
+    # Stream to a temporary .part file, then rename when complete (avoids treating a partial download as finished)
+    tmpPath = outPath + '.part'
+    print(f"Downloading {url} -> {outPath}")
+    with requests.get(url, stream=True, timeout=60) as r:
+        r.raise_for_status()
+        fileURL = r.url  # '-latest' redirects to a dated snapshot (e.g., .../rhode-island-261118.osm.pbf); its checksum lives next to it
+        print(f"  Snapshot: {fileURL.split('/')[-1]}")
+        totalBytes = int(r.headers.get('content-length', 0))
+        doneBytes, nextReport, start = 0, 0, time.time()
+        with open(tmpPath, 'wb') as f:
+            for chunk in r.iter_content(chunk_size=16 * 1024 * 1024):
+                f.write(chunk)
+                doneBytes += len(chunk)
+                if doneBytes >= nextReport:
+                    pct = f" ({100 * doneBytes / totalBytes:.1f}%)" if totalBytes else ""
+                    print(f"  {doneBytes / 1e9:.2f} GB{pct}, {(time.time() - start) / 60:.1f} min elapsed")
+                    nextReport += 1e9  # report every ~1 GB
+
+    # Optionally verify against Geofabrik's published MD5 checksum
+    if checkMD5:
+        md5Response = requests.get(fileURL + '.md5', timeout=60)
+        md5Response.raise_for_status()
+        expected = md5Response.text.split()[0]
+        md5 = hashlib.md5()
+        with open(tmpPath, 'rb') as f:
+            for block in iter(lambda: f.read(64 * 1024 * 1024), b''):
+                md5.update(block)
+        if md5.hexdigest() != expected:
+            raise ValueError(f"MD5 mismatch for {tmpPath} (expected {expected}, got {md5.hexdigest()}). Delete it and re-download.")
+        print("  MD5 checksum verified.")
+
+    os.replace(tmpPath, outPath)
+    print(f"Download complete: {outPath}")
+    return outPath
+
+# Define a function that extracts all solar features from a PBF file (planet or regional extract) in a single pass and saves them to a GeoPackage
+def extractSolarFromPBF(pbfPath, outPath, overwrite=False, keepFiltered=False):
+    # pbfPath: path to .osm.pbf (e.g., planet-251124.osm.pbf or north-america-latest.osm.pbf)
+    # outPath: output GeoPackage (.gpkg) holding all solar polygons (EPSG:4326) with columns: element, id, tags (JSON string), geometry
+
+    if os.path.exists(outPath) and not overwrite:
+        print(f"Solar extract already exists, skipping: {outPath}")
+        return outPath
+    gu.checkFolder(os.path.dirname(outPath))
+
+    # Step 1: Filter the PBF down to solar-tagged ways/relations plus every node/way they reference (equivalent to 'osmium tags-filter').
+    # Reading only ways and relations in this pass avoids decoding billions of nodes; BackReferenceWriter then adds the referenced nodes/member ways.
+    filteredPBF = os.path.splitext(outPath)[0] + '_filtered.osm.pbf'
+    start = time.time()
+    print(f"Step 1/2: Filtering solar features from {pbfPath} (planet-sized files can take a few hours)...")
+    solarFilter = osm.filter.TagFilter(*solarTagFilter.items())
+    with osm.BackReferenceWriter(filteredPBF, ref_src=pbfPath, overwrite=True) as writer:
+        for obj in osm.FileProcessor(pbfPath, osm.osm.WAY | osm.osm.RELATION).with_filter(solarFilter):
+            writer.add(obj)
+    print(f"  Filtered PBF written ({os.path.getsize(filteredPBF) / 1e6:.1f} MB) in {(time.time() - start) / 60:.1f} min")
+
+    # Step 2: Assemble polygons (closed ways and multipolygon relations) from the small filtered file
+    print("Step 2/2: Assembling solar polygons...")
+    wkbfab = osm.geom.WKBFactory()
+    rows, nFailed = [], 0
+    for obj in osm.FileProcessor(filteredPBF).with_areas():
+        if not obj.is_area():
+            continue  # Non-closed ways (lines) and nodes are dropped downstream anyway
+        tags = dict(obj.tags)
+        if not any(tags.get(k) == v for k, v in solarTagFilter.items()):
+            continue  # Untagged member ways of multipolygon relations also become areas; skip them
+        try:
+            geom = wkblib.loads(wkbfab.create_multipolygon(obj), hex=True)
+        except Exception:
+            nFailed += 1  # Broken/incomplete polygons (osmnx would also drop these)
+            continue
+        # Match osmnx: single-part polygons are returned as Polygon
+        if isinstance(geom, MultiPolygon) and len(geom.geoms) == 1:
+            geom = geom.geoms[0]
+        rows.append({'element': 'way' if obj.from_way() else 'relation', 'id': obj.orig_id(),
+                     'tags': json.dumps(tags, ensure_ascii=False), 'geometry': geom})
+
+    solarGdf = gpd.GeoDataFrame(rows, geometry='geometry', crs='EPSG:4326')
+    solarGdf.to_file(outPath, driver='GPKG')
+    print(f"  {len(solarGdf)} solar polygons saved to {outPath} ({nFailed} invalid polygons skipped). Total {(time.time() - start) / 60:.1f} min")
+
+    if not keepFiltered:
+        os.remove(filteredPBF)
+    return outPath
+
+# Define a function to load the solar extract into the same structure osmnx returns (MultiIndex (element, id), one column per tag, EPSG:4326)
+def loadSolarOSMExtract(extractPath):
+    solarGdf = gpd.read_file(extractPath)
+    tags = pd.DataFrame([json.loads(t) for t in solarGdf['tags']], index=solarGdf.index)
+    solarGdf = pd.concat([solarGdf[['element', 'id', 'geometry']], tags], axis=1)
+    solarGdf = gpd.GeoDataFrame(solarGdf, geometry='geometry', crs='EPSG:4326')
+    return solarGdf.set_index(['element', 'id'])
+
+# Define a function to select solar features for a region from the bulk extract (same place boundary and 'intersects' rule as ox.features_from_place)
+def getRegionSolarFromExtract(place, solarGdf):
+    aoiGeom = ox.geocode_to_gdf(place).to_crs('EPSG:4326').geometry.iloc[0]
+    candidates = solarGdf.iloc[solarGdf.sindex.query(aoiGeom, predicate='intersects')]
+    return candidates.dropna(axis=1, how='all')  # Drop tag columns unused in this region, as osmnx would
+
+# Inverter tags (no settled OSM convention yet; see https://community.openstreetmap.org/t/creating-a-wiki-page-for-power-inverter/123380)
+# power=inverter is the most used (~7.5k worldwide, Dec 2024); the others were proposed/used as alternatives. power=converter also covers HVDC converter stations.
+inverterTagFilter = [('power', 'inverter'), ('power', 'converter'), ('power', 'inverter_station'), ('substation', 'inverter'), ('transformer', 'inverter')]
+
+# Return the first inverter tag ('key=value') an OSM tag dict matches, or None
+def matchInverterTag(tags):
+    for k, v in inverterTagFilter:
+        if tags.get(k) == v:
+            return f'{k}={v}'
+    return None
+
+# Define a function that extracts all inverter features (nodes, ways, and relations) from a PBF file in a single pass and saves them to a GeoPackage
+def extractInvertersFromPBF(pbfPath, outPath, overwrite=False, keepFiltered=False):
+    # outPath: output GeoPackage (EPSG:4326) with columns: element, id, tags (JSON string), geometry (Point for nodes, Polygon/LineString for ways/relations)
+    # NOTE: Unlike extractSolarFromPBF, this pass must also read nodes (most inverters are mapped as points), so it is slower (decodes every node in the file).
+
+    if os.path.exists(outPath) and not overwrite:
+        print(f"Inverter extract already exists, skipping: {outPath}")
+        return outPath
+    gu.checkFolder(os.path.dirname(outPath))
+
+    # Step 1: Filter the PBF down to inverter-tagged objects plus every node/way they reference
+    filteredPBF = os.path.splitext(outPath)[0] + '_filtered.osm.pbf'
+    start = time.time()
+    print(f"Step 1/2: Filtering inverter features from {pbfPath} (reads all nodes; expect longer than the solar extract)...")
+    with osm.BackReferenceWriter(filteredPBF, ref_src=pbfPath, overwrite=True) as writer:
+        for obj in osm.FileProcessor(pbfPath, osm.osm.NODE | osm.osm.WAY | osm.osm.RELATION).with_filter(osm.filter.TagFilter(*inverterTagFilter)):
+            writer.add(obj)
+    print(f"  Filtered PBF written ({os.path.getsize(filteredPBF) / 1e6:.1f} MB) in {(time.time() - start) / 60:.1f} min")
+
+    # Step 2: Build geometries. Nodes -> Point; closed ways and multipolygon relations -> Polygon (via area assembly); open ways -> LineString
+    print("Step 2/2: Building inverter geometries...")
+    wkbfab = osm.geom.WKBFactory()
+    rows, nFailed = [], 0
+    for obj in osm.FileProcessor(filteredPBF).with_locations().with_areas():
+        tags = dict(obj.tags)
+        if matchInverterTag(tags) is None:
+            continue  # Referenced nodes/member ways without inverter tags
+        try:
+            if obj.is_node():
+                if not obj.location.valid():
+                    continue
+                element, osmID, geom = 'node', obj.id, Point(obj.location.lon, obj.location.lat)
+            elif obj.is_area():
+                element, osmID = ('way' if obj.from_way() else 'relation'), obj.orig_id()
+                geom = wkblib.loads(wkbfab.create_multipolygon(obj), hex=True)
+                if isinstance(geom, MultiPolygon) and len(geom.geoms) == 1:
+                    geom = geom.geoms[0]
+            elif obj.is_way() and not obj.is_closed():
+                element, osmID, geom = 'way', obj.id, wkblib.loads(wkbfab.create_linestring(obj), hex=True)
+            else:
+                continue  # Closed ways are handled as areas; non-multipolygon relations are skipped
+        except Exception:
+            nFailed += 1
+            continue
+        rows.append({'element': element, 'id': osmID, 'tags': json.dumps(tags, ensure_ascii=False), 'geometry': geom})
+
+    invGdf = gpd.GeoDataFrame(rows, geometry='geometry', crs='EPSG:4326')
+    invGdf.to_file(outPath, driver='GPKG')
+    print(f"  {len(invGdf)} inverter features saved to {outPath} ({nFailed} invalid geometries skipped). Total {(time.time() - start) / 60:.1f} min")
+    print("  " + invGdf['element'].value_counts().to_string().replace('\n', ', '))
+
+    if not keepFiltered:
+        os.remove(filteredPBF)
+    return outPath
+
+
+
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ OpenStreetMap Functions
 
 # Define a function that grabs all solar panel and array data from OSM for a given region
-def getSolarOSMData(regionName, countryName, config, osmPlanetPBF=None):
+def getSolarOSMData(regionName, countryName, config, method='api', osmSolar=None):
 
     # config: dict from gu.load_config(), loaded once by the caller
+    # method: 'api' (default) downloads from the Overpass API via osmnx; 'pbf' clips from a bulk solar extract built by extractSolarFromPBF()
+    # osmSolar: (method='pbf' only) path to the solar extract GeoPackage, or the gdf already loaded with loadSolarOSMExtract()
     toCRS = config['to_crs']  # EPSG:6350 NAD83 (2011)
     toCRS = f'EPSG:{toCRS}'
 
@@ -74,11 +270,10 @@ def getSolarOSMData(regionName, countryName, config, osmPlanetPBF=None):
     place = regionName + ', ' + countryName 
 
     # Define grouped tag for solar panels and arrays (NOTE: We will still have to filter out the arrays from panels)
-    solarTags = {"plant:source": "solar",
-                "generator:source": "solar"}
+    solarTags = solarTagFilter
 
-    # If osmPlanetPBF file path is not provided, use OSMnx and Overpass API to download OSM solar data
-    if osmPlanetPBF is None:
+    # API method: use OSMnx and Overpass API to download OSM solar data
+    if method == 'api':
         # Retrieve the data from OSM
         try:
             # Try retrieving solar data
@@ -87,84 +282,19 @@ def getSolarOSMData(regionName, countryName, config, osmPlanetPBF=None):
         except InsufficientResponseError:
             print(f"No solar data found for {regionName}.")
             solarData = gpd.GeoDataFrame(geometry=[], crs=toCRS)
-    # Else, use Osmium and pbf file to load OSM solar data
-    else:
-        print(f"{regionName}: Reading solar data from local PBF: {osmPlanetPBF}")
-        # Get AOI polygon (lat/lon) from the place name
-        aoi = ox.geocode_to_gdf(place)
-        # Ensure AOI is in WGS84
-        aoi = aoi.to_crs("EPSG:4326")
-        aoi_geom = aoi.geometry.iloc[0]
-
-        class SolarHandler(osm.SimpleHandler):
-            def __init__(self, aoi_geom):
-                super().__init__()
-                self.rows = []
-                self.aoi = aoi_geom
-                self.wkbfab = osm.geom.WKBFactory()
-
-            def _has_solar_tag(self, tags):
-                return (
-                    tags.get("plant:source") == "solar"
-                    or tags.get("generator:source") == "solar"
-                )
-
-            def _in_aoi(self, geom):
-                return self.aoi is None or geom.intersects(self.aoi)
-
-            def way(self, w):
-                if not w.tags:
-                    return
-                if not self._has_solar_tag(w.tags):
-                    return
-                try:
-                    # Areas (closed ways) vs lines
-                    if w.is_closed():
-                        wkb = self.wkbfab.create_multipolygon(w)
-                    else:
-                        wkb = self.wkbfab.create_linestring(w)
-                    geom = wkblib.loads(wkb, hex=True)
-                    if not self._in_aoi(geom):
-                        return
-
-                    row = {"osmid": w.id, "geometry": geom}
-                    row.update(dict(w.tags))  # expand tags into columns
-                    self.rows.append(row)
-                except osm.geom.GeometryError:
-                    # Skip invalid geometries
-                    pass
-
-            def relation(self, r):
-                if not r.tags:
-                    return
-                if not self._has_solar_tag(r.tags):
-                    return
-                try:
-                    wkb = self.wkbfab.create_multipolygon(r)
-                    geom = wkblib.loads(wkb, hex=True)
-                    if not self._in_aoi(geom):
-                        return
-
-                    row = {"osmid": r.id, "geometry": geom}
-                    row.update(dict(r.tags))
-                    self.rows.append(row)
-                except osm.geom.GeometryError:
-                    pass
-
-        handler = SolarHandler(aoi_geom)
-
-        try:
-            # Stream through the whole PBF
-            handler.apply_file(osmPlanetPBF, locations=True)
-            if handler.rows:
-                solarData = gpd.GeoDataFrame(handler.rows, geometry="geometry", crs="EPSG:4326")
-                solarData = solarData.to_crs(toCRS)
-            else:
-                print(f"{regionName}: No solar features found in PBF.")
-                solarData = gpd.GeoDataFrame(geometry=[], crs=toCRS)
-        except FileNotFoundError:
-            print(f"{regionName}: PBF file not found at {osmPlanetPBF}. Returning empty GeoDataFrame.")
+    # PBF method: select this region's features from the bulk solar extract (same structure as the osmnx output, so processing below is shared)
+    elif method == 'pbf':
+        if osmSolar is None:
+            raise ValueError("method='pbf' requires osmSolar (path to the solar extract from extractSolarFromPBF, or the loaded gdf).")
+        if isinstance(osmSolar, (str, os.PathLike)):
+            osmSolar = loadSolarOSMExtract(osmSolar)
+        print(f"{regionName}: Selecting solar data from bulk PBF extract...")
+        solarData = getRegionSolarFromExtract(place, osmSolar)
+        if solarData.empty:
+            print(f"No solar data found for {regionName}.")
             solarData = gpd.GeoDataFrame(geometry=[], crs=toCRS)
+    else:
+        raise ValueError(f"Unknown method '{method}'. Use 'api' or 'pbf'.")
 
     # If solarData contains data, try to split into arrays and panels respectively. Otherwise build empty gdfs.
     # If only one exists and not the other (e.g., arrays but not panels), parse and build one empty gdf
@@ -304,7 +434,8 @@ def getSolarOSMData(regionName, countryName, config, osmPlanetPBF=None):
     return panelData, arrayData
 
 # Define Function to Process Solar OSM Data
-def processSolarOSMData(regionName, countryName, wd, config, osmPlanetPBF=None):   
+def processSolarOSMData(regionName, countryName, wd, config, method='api', osmSolar=None):   
+    # method / osmSolar: see getSolarOSMData ('api' = Overpass API, 'pbf' = bulk solar extract from extractSolarFromPBF)
 
     # config: dict from gu.load_config(), loaded once by the caller
     minPanelRowArea = config['minPanelRowArea'] # 15 m2, minimum area for a single panel row from the 1st percentile panel area from Stid et al., 2022
@@ -331,10 +462,7 @@ def processSolarOSMData(regionName, countryName, wd, config, osmPlanetPBF=None):
     gu.checkFolder(osmArraysPath)
 
     # Get the solar panel and array data from OSM
-    if osmPlanetPBF is None:
-        panelData, arrayData = getSolarOSMData(regionName, countryName, config)
-    else:
-        panelData, arrayData = getSolarOSMData(regionName, countryName, config, osmPlanetPBF=osmPlanetPBF)
+    panelData, arrayData = getSolarOSMData(regionName, countryName, config, method=method, osmSolar=osmSolar)
 
     #~~~~~~~~~~~~~~~~~~~~# 
     # Process Array Data # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -571,7 +699,11 @@ def processSolarOSMData(regionName, countryName, wd, config, osmPlanetPBF=None):
             pref3 = pref3[~pref3.intersects(unary_union(pref2.geometry.values))]
 
     # Merge the array data
-    arrayData = pd.concat([pref1, pref2, pref3]).reset_index(drop=True)
+    # Skip empty frames and drop all-NA columns before concatenating (avoids pandas FutureWarning); reindex restores every column in its original order
+    nonEmpty = [d for d in [pref1, pref2, pref3] if d is not None and not d.empty]
+    allCols = list(dict.fromkeys(c for d in nonEmpty for c in d.columns))
+    arrayData = (pd.concat([d.dropna(axis=1, how='all') for d in nonEmpty]).reindex(columns=allCols).reset_index(drop=True)
+                 if nonEmpty else pref1.reset_index(drop=True))
 
     #~~~~~~~~~~~~~~~~~~~~~~~~~# 
     # Fill Gaps and Save Data # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -639,15 +771,20 @@ def processSolarOSMData(regionName, countryName, wd, config, osmPlanetPBF=None):
 
     # If dataframes are empty, ignore, otherwise save the data to a shapefile in the OSM download folder for the region
     if panelData is not None and not panelData.empty:
-        panelData.to_file(os.path.join(osmPanelsPath, regionName + 'SolarPanels.shp'))
+        panelData.to_file(os.path.join(osmPanelsPath, regionName + 'SolarPanels.gpkg'), driver='GPKG')
     if arrayData is not None and not arrayData.empty:
-        arrayData.to_file(os.path.join(osmArraysPath, regionName + 'SolarArrays.shp'))
+        arrayData.to_file(os.path.join(osmArraysPath, regionName + 'SolarArrays.gpkg'), driver='GPKG')
 
     # If desired, return the dataframes
     #return panelData, arrayData
 
 # Define function to iterate through each region in a country and extract OSM solar data
-def getCountrySolarOSMData(countryName, wd, config, processCountry=True):
+def getCountrySolarOSMData(countryName, wd, config, processCountry=True, method='api', osmSolar=None):
+    # method / osmSolar: see getSolarOSMData ('api' = Overpass API, 'pbf' = bulk solar extract from extractSolarFromPBF)
+
+    # For the PBF method, load the solar extract once and reuse it for every region
+    if method == 'pbf' and isinstance(osmSolar, (str, os.PathLike)):
+        osmSolar = loadSolarOSMExtract(osmSolar)
 
     # Get regions within the country from the above dictionary
     regions = countryRegionsDict[countryName]
@@ -672,14 +809,14 @@ def getCountrySolarOSMData(countryName, wd, config, processCountry=True):
 
     # Loop through each region and get the solar data
     for region in regions:
-        processSolarOSMData(region, countryName, wd, config)
+        processSolarOSMData(region, countryName, wd, config, method=method, osmSolar=osmSolar)
         print(region + ' data has been downloaded and processed.')
     
     # If processCountry is True, load all data and print summary statistics, and export combined shapefiles
     if processCountry:
         # Load all solar panel and array data
-        panels = gu.load_all_gdf(osmPanelsPath, 'shp', toCRS)
-        arrays = gu.load_all_gdf(osmArraysPath, 'shp', toCRS)
+        panels = gu.load_all_gdf(osmPanelsPath, 'gpkg', toCRS)
+        arrays = gu.load_all_gdf(osmArraysPath, 'gpkg', toCRS)
 
         # Print the number of solar panels and arrays in countryName
         print(f'Total solar panels in {countryName}: {len(panels)}')
@@ -690,5 +827,137 @@ def getCountrySolarOSMData(countryName, wd, config, processCountry=True):
         print(f'Total solar arrays area in {countryName}: {arrays.area.sum() / 1e6:.2f} km^2')
 
         # Save the data to a shapefile in the OSM download folder, append with country name
-        panels.to_file(os.path.join(osmCountryPath, 'OSMSolarPanels_' + countryName + '.shp'))
-        arrays.to_file(os.path.join(osmCountryPath, 'OSMSolarArrays_' + countryName + '.shp'))
+        panels.to_file(os.path.join(osmCountryPath, 'OSMSolarPanels_' + countryName + '.gpkg'), driver='GPKG')
+        arrays.to_file(os.path.join(osmCountryPath, 'OSMSolarArrays_' + countryName + '.gpkg'), driver='GPKG')
+
+
+
+# ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ OpenStreetMap Inverter Functions
+# Inverters are returned as points (polygon footprints are reduced to their centroid; their area is kept as footArea).
+# Each inverter is matched to the nearest OSM solar array (from the solar run above): distArray (m), inArray (touches/inside an array), nearArray (within bufferDist).
+
+# OSM tags kept in the inverter outputs (when present)
+inverterKeepTags = ['power', 'substation', 'transformer', 'converter', 'name', 'operator', 'ref', 'manufacturer', 'model', 'rating',
+                    'capacity', 'voltage', 'frequency', 'plant:source', 'generator:source', 'location', 'start_date']
+
+# Define a function that grabs inverter data from OSM for a given region and matches it to nearby solar arrays
+def getInverterOSMData(regionName, countryName, config, method='api', osmInverters=None, arrays=None, bufferDist=100):
+    # method: 'api' (Overpass API via osmnx) or 'pbf' (clip from the extract built by extractInvertersFromPBF)
+    # osmInverters: (method='pbf' only) path to the inverter extract GeoPackage, or the gdf already loaded with loadSolarOSMExtract()
+    # arrays: OSM solar arrays (any CRS, needs 'nativeID'); bufferDist: distance (m, in to_crs units) for nearArray
+    toCRS = f"EPSG:{config['to_crs']}"
+    place = regionName + ', ' + countryName
+
+    # Retrieve inverter features (both methods return a MultiIndex (element, id) gdf with one column per tag)
+    emptyGdf = gpd.GeoDataFrame(geometry=[], crs=toCRS)
+    if method == 'api':
+        osmnxTags = {}
+        for k, v in inverterTagFilter:
+            osmnxTags.setdefault(k, []).append(v)
+        try:
+            print(f"{regionName}: Attempting to retrieve inverter data...")
+            inv = ox.features_from_place(place, tags=osmnxTags)
+        except InsufficientResponseError:
+            inv = emptyGdf
+    elif method == 'pbf':
+        if osmInverters is None:
+            raise ValueError("method='pbf' requires osmInverters (path to the inverter extract from extractInvertersFromPBF, or the loaded gdf).")
+        if isinstance(osmInverters, (str, os.PathLike)):
+            osmInverters = loadSolarOSMExtract(osmInverters)  # same file structure as the solar extract
+        print(f"{regionName}: Selecting inverter data from bulk PBF extract...")
+        inv = getRegionSolarFromExtract(place, osmInverters)
+    else:
+        raise ValueError(f"Unknown method '{method}'. Use 'api' or 'pbf'.")
+    if inv.empty:
+        print(f"No inverter data found for {regionName}.")
+        return emptyGdf
+
+    # Standardize columns: osmID ('node/123', viewable at openstreetmap.org/<osmID>), matched inverter tag, and kept OSM tags
+    inv = inv.reset_index()
+    inv['osmID'] = inv['element'] + '/' + inv['id'].astype(str)
+    inv['invTag'] = None
+    for k, v in reversed(inverterTagFilter):  # first tag in inverterTagFilter wins
+        if k in inv.columns:
+            inv.loc[inv[k].eq(v), 'invTag'] = f'{k}={v}'
+    inv = inv[inv['invTag'].notna()]  # osmnx can return untagged features (e.g., relation members)
+    if inv.empty:
+        print(f"No inverter data found for {regionName}.")
+        return emptyGdf
+    inv['region'] = regionName
+    keep = ['osmID', 'element', 'invTag', 'region'] + [t for t in inverterKeepTags if t in inv.columns]
+    inv = gpd.GeoDataFrame(inv[keep + ['geometry']], geometry='geometry', crs=inv.crs).to_crs(toCRS)
+
+    # Footprint type and area (0 for points)
+    inv['geomType'] = inv.geom_type
+    inv['footArea'] = inv.area.round(1)
+
+    # Match to the nearest solar array using the full footprint (so a polygon touching an array counts as inArray)
+    inv = inv.reset_index(drop=True)
+    if arrays is not None and not arrays.empty:
+        near = gpd.sjoin_nearest(inv[['geometry']], arrays[['nativeID', 'geometry']].to_crs(toCRS), how='left', distance_col='distArray')
+        near = near[~near.index.duplicated(keep='first')]  # ties: keep one array
+        inv['arrNatID'] = near['nativeID']
+        inv['distArray'] = near['distArray'].round(1)
+    else:
+        inv['arrNatID'] = None
+        inv['distArray'] = np.nan
+    inv['inArray'] = inv['distArray'].eq(0)
+    inv['nearArray'] = inv['distArray'].le(bufferDist)
+
+    # Reduce footprints to points (polygon/line centroids)
+    inv['geometry'] = inv.geometry.centroid
+    return inv
+
+# Define a function to convert inverters to the standard inverter output format shared with other sources (e.g., PanelSeg): invType, Source, geometry (centroid points)
+# OSM diagnostic columns (osmID, invTag, distArray, inArray, nearArray, arrNatID, ...) are kept after these for filtering
+def toInverterOutput(inv):
+    out = inv.copy()
+    out['invType'] = 'unknown'  # unknown for now (OSM does not record central vs string)
+    out['Source'] = 'OSM'
+    out = out.set_geometry(out.geometry.centroid)
+    first = ['invType', 'Source']
+    return out[first + [c for c in out.columns if c not in first]].reset_index(drop=True)
+
+# Define function to get inverter data for every region in a country, save per-region and combined files (standard format + OSM diagnostic columns), and print a feasibility summary
+def getCountryInverterOSMData(countryName, wd, config, method='api', osmInverters=None, bufferDist=100, solarOnly=False, processCountry=True):
+    # Requires the solar run (getCountrySolarOSMData) for this country first: arrays are read from OSMSolarArrays_<country>.gpkg (or the Arrays folder)
+    # solarOnly: if True, drop inverters farther than bufferDist from an OSM solar array (OSM inverter tags do not say the source, so
+    #            proximity to a mapped solar array is the only solar evidence). If False (default), keep all and use the nearArray flag.
+    toCRS = f"EPSG:{config['to_crs']}"
+    osmCountryPath = os.path.join(wd, r'Data\Downloaded\SolarDB\OSM', countryName)
+    osmArraysPath = os.path.join(osmCountryPath, r'Arrays')
+    osmInvertersPath = os.path.join(osmCountryPath, r'Inverters')
+    gu.checkFolder(osmInvertersPath)
+
+    # Load inputs once: the country's solar arrays (so inverters near state borders still match) and, for 'pbf', the inverter extract
+    countryArraysFile = os.path.join(osmCountryPath, 'OSMSolarArrays_' + countryName + '.gpkg')
+    arrays = gpd.read_file(countryArraysFile).to_crs(toCRS) if os.path.exists(countryArraysFile) else gu.load_all_gdf(osmArraysPath, 'gpkg', toCRS)
+    if method == 'pbf' and isinstance(osmInverters, (str, os.PathLike)):
+        osmInverters = loadSolarOSMExtract(osmInverters)
+
+    # Loop through each region
+    allInv = []
+    for region in countryRegionsDict[countryName]:
+        inv = getInverterOSMData(region, countryName, config, method=method, osmInverters=osmInverters, arrays=arrays, bufferDist=bufferDist)
+        if solarOnly and not inv.empty:
+            inv = inv[inv['nearArray']].reset_index(drop=True)
+        if not inv.empty:
+            toInverterOutput(inv).to_file(os.path.join(osmInvertersPath, region + 'SolarInverters.gpkg'), driver='GPKG')
+            allInv.append(inv)
+        nNear = int(inv['nearArray'].sum()) if not inv.empty else 0
+        print(f"{region}: {len(inv)} inverters ({nNear} within {bufferDist} m of an OSM solar array).")
+
+    if not processCountry or not allInv:
+        return
+    # Combine (features crossing a state border appear in both states; keep the first)
+    inv = gpd.GeoDataFrame(pd.concat(allInv, ignore_index=True), crs=toCRS).drop_duplicates('osmID')
+    toInverterOutput(inv).to_file(os.path.join(osmCountryPath, 'OSMSolarInverters_' + countryName + '.gpkg'), driver='GPKG')
+
+    # Feasibility summary
+    print(f"\nTotal OSM inverters in {countryName}: {len(inv)}")
+    print("By tag:\n" + inv['invTag'].value_counts().to_string())
+    print("By OSM element:\n" + inv['element'].value_counts().to_string())
+    print(f"Inside/touching an OSM solar array: {inv['inArray'].sum()} ({100 * inv['inArray'].mean():.1f}%)")
+    print(f"Within {bufferDist} m of an OSM solar array: {inv['nearArray'].sum()} ({100 * inv['nearArray'].mean():.1f}%)")
+    print(f"OSM solar arrays with >=1 inverter within {bufferDist} m: {inv.loc[inv['nearArray'], 'arrNatID'].nunique()} of {len(arrays)}")
+    return toInverterOutput(inv)

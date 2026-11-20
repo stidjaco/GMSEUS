@@ -717,7 +717,7 @@ def dropSelfOverlapGDF(gdf: gpd.GeoDataFrame, unbuffer_m: float = 1.0) -> gpd.Ge
     out = out.drop(columns=["tempID"]).reset_index(drop=True)
     return out
 
-# Function to buffer point data and remove overlaps based on order of preference
+# Function to buffer point data
 def bufferFacilityPointData(gdf, bufferDist):
     gdf_buffer = gdf.copy()
     gdf_buffer['geometry'] = gdf_buffer.buffer(bufferDist)
