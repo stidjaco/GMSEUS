@@ -9,7 +9,7 @@ description = "GM-SEUS: Ground-Mounted Solar Energy in the United States — pro
 requires-python = ">=3.10"
 
 [tool.setuptools]
-py-modules = ["gmseusUtils", "osmUtils"]
+py-modules = ["gmseusUtils", "osmUtils", "figureTheme"]
 
 [tool.setuptools.package-dir]
 "" = "utils"

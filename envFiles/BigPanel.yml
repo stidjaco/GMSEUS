@@ -2,7 +2,7 @@
 # Setup (from the repository root):
 #   mamba env create -f envFiles/BigPanel.yml
 #   mamba activate BigPanel
-#   pip install -e .      # editable install of utils/ (gmseusUtils, osmUtils); see README
+#   pip install -e .      # editable install of utils/ (gmseusUtils, osmUtils, figureTheme); see README
 name: BigPanel
 channels:
   - conda-forge
@@ -27,9 +27,11 @@ dependencies:
   - h3-py=4.1.1
   - h3pandas=0.2.6
   - pvlib=0.16.1
+  - timezonefinder=8.2.0
   - requests=2.31.0
   - beautifulsoup4=4.15.0
   - openpyxl=3.1.4
+  - xlrd=2.0.1
   - opencv=4.12.0
   - ipykernel=6.29.3
   - ca-certificates
@@ -39,3 +41,4 @@ dependencies:
   - pip:
       - pvcz==0.3.0
       - pyarrow==23.0.0
+      - python-pptx==1.0.2 # modules/dev/makeMethodsDeck.py

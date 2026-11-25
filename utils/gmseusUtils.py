@@ -479,8 +479,9 @@ def assignMountType(feature, config):
             angle_degrees -= 360
         
         # In the northern hemisphere, the a solar panel-row azimuth angle will never be towards the north (270 to 360 and 0 to 90 degrees). Therefore, if the azimuth is between 270 and 360 or 0 and 90, we need to add 180 degrees to the azimuth to get the correct orientation of the panel.
+        # Wrap back to 0-360 so all azimuths fall between 90 and 270 (without the wrap, 270-360 became 450-540, which broke the mount classification below and array medians).
         if 270 <= angle_degrees <= 360 or 0 <= angle_degrees <= 90:
-            angle_degrees += 180
+            angle_degrees = (angle_degrees + 180) % 360
 
         return angle_degrees
     
