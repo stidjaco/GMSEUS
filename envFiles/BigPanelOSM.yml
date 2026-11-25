@@ -1,0 +1,30 @@
+# OpenStreetMap environment for script1 (Overpass API and bulk PBF methods).
+# Setup (from the repository root):
+#   mamba env create -f envFiles/BigPanelOSM.yml
+#   mamba activate BigPanelOSM
+#   pip install -e .      # editable install of utils/ (gmseusUtils, osmUtils); see README
+name: BigPanelOSM
+channels:
+  - conda-forge
+dependencies:
+  - python=3.11
+  - numpy=2.3.5
+  - pandas=2.3.3
+  - geopandas=1.1.1
+  - shapely=2.1.2
+  - pyproj=3.7.2
+  - rtree=1.4.1
+  - rasterio=1.4.3
+  - scikit-learn=1.7.2
+  - scipy=1.16.3
+  - matplotlib-base=3.10.8
+  - matplotlib-scalebar=0.9.0
+  - osmnx=2.0.7
+  - requests=2.32.5
+  - libblas=*=*openblas  # OpenBLAS, not MKL: MKL 2025 crashes numpy when VS Code fails to activate the env
+  - ipykernel=7.1.0
+  - ca-certificates
+  - certifi
+  - openssl
+  - pip
+  - pyosmium=4.3

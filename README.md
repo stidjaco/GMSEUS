@@ -109,7 +109,7 @@ mamba activate BigPanel
 pip install -e .
 ```
 
-Repeat the `mamba activate <envName> && pip install -e .` step for each of the other environments you use (`BigPanelGEE`, `BigPanelOSMPlanet`, `BigPanelTilt`).
+Repeat the `mamba activate <envName> && pip install -e .` step for each of the other environments you use (`BigPanelGEE`, `BigPanelOSM`, `BigPanelTilt`).
 
 **Why `-e` (editable)?** The install creates a pointer to the source files rather than copying them. Any edit you later make to `gmseusUtils.py` or `osmUtils.py` is picked up automatically on the next import — no reinstall required. You only need to re-run `pip install -e .` if `pyproject.toml` itself changes (e.g., a new top-level module is added), or when setting up a brand-new environment.
 
@@ -146,7 +146,7 @@ Code/
 Environment Files — `envFiles/`:
 * `envFiles/BigPanel.yml`: General python environment for most ipynb files.
 * `envFiles/BigPanelGEE.yml`: Python environment for `script5` that requires GEE access and cloud repository.
-* `envFiles/BigPanelOSMPlanet.yaml`: Python environment for processing the full OSM planet extract used in `script1`.
+* `envFiles/BigPanelOSM.yml`: OpenStreetMap environment for `script1` (Overpass API and bulk PBF methods).
 * `envFiles/BigPanelTilt.yml`: Python environment for `script8` that requires pvlib integration and thus a different version of python.
 
 Package & Configuration (repository root):

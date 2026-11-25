@@ -1,13 +1,25 @@
-name: F:\Python_Envs\BigPanelGEE
+# Google Earth Engine environment for script5 (and modules/dev/getLULC).
+# Setup (from the repository root):
+#   mamba env create -f envFiles/BigPanelGEE.yml
+#   mamba activate BigPanelGEE
+#   pip install -e .      # editable install of utils/ (gmseusUtils, osmUtils); see README
+name: BigPanelGEE
 channels:
   - conda-forge
 dependencies:
-  - numpy
-  - pandas
-  - geopandas
-  - earthengine-api
+  - python=3.12
+  - numpy=2.0.1
+  - pandas=2.2.2
+  - geopandas=1.0.1
+  - shapely=2.1.2
+  - rasterio=1.4.3
+  - scikit-learn=1.5.1
+  - matplotlib-base=3.9.1
+  - matplotlib-scalebar=0.9.0
+  - earthengine-api=0.1.413
+  - geemap=0.33.1
+  - ipykernel=6.29.5
   - ca-certificates
   - certifi
   - openssl
-  - geemap
-prefix: F:\Python_Envs\BigPanelGEE
+  - pip

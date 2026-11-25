@@ -1,23 +1,44 @@
+# General environment for most notebooks (script2, 4, 7, 9, 10 and modules/).
+# Setup (from the repository root):
+#   mamba env create -f envFiles/BigPanel.yml
+#   mamba activate BigPanel
+#   pip install -e .      # editable install of utils/ (gmseusUtils, osmUtils, figureTheme); see README
 name: BigPanel
 channels:
   - conda-forge
 dependencies:
-  - numpy
-  - pandas
-  - rasterio
-  - ipykernel
-  - matplotlib-scalebar
+  - python=3.12
+  - numpy=1.26.4
+  - pandas=2.2.1
+  - geopandas=1.1.4
+  - shapely=2.2.0
+  - pyproj=3.7.2
+  - pyogrio=0.12.1
+  - fiona=1.10.1
+  - rasterio=1.5.0
+  - libgdal=3.12.2
+  - proj=9.7.1
+  - scikit-learn=1.5.1
+  - matplotlib-base=3.8.3
+  - matplotlib-scalebar=0.8.1
+  - seaborn=0.13.2
+  - contextily=1.6.0
+  - osmnx=2.1.2
+  - h3-py=4.1.1
+  - h3pandas=0.2.6
+  - pvlib=0.16.1
+  - timezonefinder=8.2.0
+  - requests=2.31.0
+  - beautifulsoup4=4.15.0
+  - openpyxl=3.1.4
+  - xlrd=2.0.1
+  - opencv=4.12.0
+  - ipykernel=6.29.3
   - ca-certificates
   - certifi
   - openssl
-  - contextily
-  - seaborn
-  - requests
-  - openpyxl
-  - opencv
-  - geopandas
-  - pyproj
-  - osmnx
-  - h3~=3.0
-  - h3-py
-  - h3pandas
+  - pip
+  - pip:
+      - pvcz==0.3.0
+      - pyarrow==23.0.0
+      - python-pptx==1.0.2 # modules/dev/makeMethodsDeck.py
