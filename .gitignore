@@ -1,5 +1,7 @@
 modules/dev/archive/
 modules/dev/playground.ipynb
+modules/dev/makeMethodsDeck.py
+modules/dev/GenEmissions_MethodsOverview.pptx
 __pycache__/
 .vscode/
 .claude/
